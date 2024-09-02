@@ -17,5 +17,5 @@ Data and code for reproducing the statistical analyses of:
 a) Fitness and morphology (Figure 2-3, Fugure S2.2-S2.8, Figure S3.1-S3.2)
 b) Metabolite concentrations (Figure 4, Figure 5a, Figure S4.1-S4.3, Figure S5.1)
 
-3. Induction experiments
+4. Induction experiments
 Data and code for reproducing the statistical analyses and Figure 5c-d, Figure S5.2
