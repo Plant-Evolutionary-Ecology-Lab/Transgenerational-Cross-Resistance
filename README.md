@@ -9,10 +9,10 @@ Transgenerational plasticity in plants is an increasingly recognized phenomenon,
 This repository contains the raw data of the outdoor and indoor experiments, the metabolite concentrations and the induction experiments. It also contains the R scripts to analyze each experiment. 
 
 # Code
-### 1. [Outdoor experiments](Transgenerational-Cross-Resistance/1-Outdoor_experiments/)
+### 1. [Outdoor experiments](1-Outdoor_experiments/)
 Data and code for reproducing the statistical analyses and Figure 1 and Figure S1.2.
 
-### 2. [Indoor experiments under axenic conditions](Transgenerational-Cross-Resistance/2-Indoor_experiments/)
+### 2. [Indoor experiments under axenic conditions](2-Indoor_experiments/)
 Data and code for reproducing the statistical analyses of:
 
 a) Fitness and morphology
@@ -23,5 +23,5 @@ b) Metabolite concentrations
 
    Figure 4, Figure 5a, Figure S4.1-S4.3, Figure S5.1
 
-### 3. [Induction experiments](Transgenerational-Cross-Resistance/3-Induction_experiments)
+### 3. [Induction experiments](3-Induction_experiments/)
 Data and code for reproducing the statistical analyses and Figure 5c-d, Figure S5.2
