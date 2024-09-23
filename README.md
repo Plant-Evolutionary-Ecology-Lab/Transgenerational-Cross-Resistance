@@ -17,7 +17,7 @@ Data and code for reproducing the statistical analyses of:
 
 a) Fitness and morphology
 
-   Figure 2-3, Fugure S2.2-S2.8, Figure S3.1-S3.2
+   Figure 2-3, Figure S2.2-S2.8, Figure S3.1-S3.2
 	
 b) Metabolite concentrations 
 
