@@ -1,0 +1,1290 @@
+---
+title: "Cross Resistance"
+Author: "Alexandra Chávez"
+output: html_notebook
+---
+########################################
+## Clean workspace and upload libraries
+#########################################
+```{r}
+rm(list=ls()) 
+```
+
+```{r}
+library(readxl)
+library(dplyr) 
+library(ggplot2)
+library(data.table)
+library(psych)
+library(plyr) 
+library(GGally)
+library(glmmTMB)
+library(lme4)
+library(effects)
+library(DHARMa)
+library(emmeans)
+library(ggpmisc)
+library(multcomp)
+
+# theme for ggplots
+theme_set(theme_classic(base_size = 18))
+set.seed(123) ## set a seed for reproducibility
+```
+
+
+###############################################
+##### Data cleaning and organization
+###############################################
+
+```{r}
+df<- read_excel("./2_SterileExp.xlsx", sheet= "FitnessMorphology",col_names = T, na = "")
+```
+  #convert to factors
+```{r}
+df$Pretreat1<-factor(df$Pretreat, levels=c("Cu-","Cu+"), ordered=TRUE)
+df$TreatEnv1<-factor(df$TreatEnv, levels=c("Control","Copper","Aphid"), ordered=TRUE)
+
+df<-df %>%  mutate(TreatEnv = recode(TreatEnv, Aphid=  'zAphid'))
+
+df$Genotype<-factor(df$Genotype)
+df$Pretreat<-factor(df$Pretreat) # Pre-treatment
+df$TreatEnv<-factor(df$TreatEnv) #Treatment
+df$Replicate<-factor(df$Replicate) #Replicate number per genotype
+df$Replicate1<-factor(df$Replicate1) #Replicate code
+df$Rack<-factor(df$Rack) #Rack where plants were propagated
+df$G9<-factor(df$G9) #Offspring branching before assays
+df$G10<-factor(df$G10) #Offspring branching before assays
+df$G11<-factor(df$G11) #Offspring branching before assays
+df$offsringStart<-factor(df$offsringStart) #Offspring starting the pre-treatment
+df$Position<-factor(df$Position)
+
+gen=unique(df$Genotype)
+env=unique(df$TreatEnv)
+pre=unique(df$Pretreat)
+rep=unique(df$Replicate1)
+```
+  ## fitness and morphology variables 
+```{r}
+# Fitness
+df$GRArea <-(log(df$AreaEnd)-log(df$AreaInit))/8
+df$GRFrond <-(log(df$FrondAdult+df$FrondYoung)-log(1))/8
+df$GRBiomass <-(log((df$OffBiomass*1000)+(df$MoBiomass*1000))-log(df$MoBiomass*1000))/8
+df$GRAphid <-(log(df$Aphids)-log(df$AphidsInit))/8
+
+# Phenotype
+df$AreaFrond<-(df$AreaEnd/(df$FrondAdult+df$FrondYoung))
+df$BioFrond<-((df$OffBiomass*1000)+(df$MoBiomass*1000))/(df$FrondAdult+df$FrondYoung)
+df$AreaBio<-(df$AreaEnd)/((df$OffBiomass*1000)+(df$MoBiomass*1000))
+
+df1<-df[,-c(13:20)]
+```
+
+
+#########################################################
+### Full factorial analysis of fitness and morphology ###
+#########################################################
+
+      Does copper excess pre-treatment affect fitness under different oxidative stress inducers?
+    
+       Growth rate of surface area (GRArea)
+```{r}
+dfArea<-df1[complete.cases(df1$GRArea),]
+
+## statistics
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dfArea, GRArea~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G9:G10:G11)) 
+model<-glmmTMB(data=dfArea, GRArea~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G9:G10:G11),dispformula =~TreatEnv)
+modelp<-glmmTMB(data=dfArea, GRArea~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G9:G10:G11),dispformula =~TreatEnv,
+contrasts=list(Pretreat="contr.sum",TreatEnv="contr.sum"))
+   # due to the warnings, we changed the global contrast settings to double check p-values
+options(contrasts = c("contr.sum", "contr.poly"))
+modelp<-glmmTMB(data=dfArea, GRArea~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G9:G10:G11),dispformula =~TreatEnv)
+sim<-simulateResiduals(model,n=500, plot=T)
+plotResiduals(model, dfArea$TreatEnv,  main=NULL);plotResiduals(model, dfArea$Pretreat,  main=NULL)
+summary(model)
+car::Anova(modelp,type=3)
+
+   # we set back the global contrast
+options(contrasts = c("contr.treatment", "contr.poly"))
+
+## plot
+model<-glmmTMB(data=dfArea, GRArea~Pretreat1*TreatEnv1+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G9:G10:G11),dispformula =~TreatEnv1)
+text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,
+                 TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+dfArea.1<-(dfArea %>% dplyr::group_by(TreatEnv1,Pretreat1) %>% dplyr::summarise(
+  meanGRArea   = mean(GRArea),
+  se = (sd(GRArea)/sqrt(length(GRArea)))))
+
+pdf(".../FigS2.2.pdf",height=6,width=10)
+ggplot(dfArea,aes(TreatEnv1, GRArea))+
+  geom_boxplot(aes(fill=Pretreat1))+#,size=0.2,position=position_dodge(width=1)
+  scale_color_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  scale_fill_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  guides(color="none",fill="none")+
+  labs(y="Growth rate of frond area per day",x="Treatment environment",color="Pre-\ntreatment\nenvironment",fill="Pre-\ntreatment\nenvironment")+
+  geom_text(data=text,aes(x = TreatEnv1, y = 0.4, label = label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,0.6,by=0.2),limits = c(0,0.6),expand=c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        #text=element_text(color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+  dev.off()
+  
+N=dfArea%>%dplyr::group_by(Pretreat,TreatEnv)%>%dplyr::summarise(meanGRARea=mean(GRArea,rm.na=T),n=length(GRArea));min(N$n);max(N$n)
+dfArea%>%dplyr::group_by(TreatEnv)%>%dplyr::summarise(meanGRARea=mean(GRArea,rm.na=T))
+((0.3340294-0.4288892)/0.4288892)*100
+((0.3493478-0.4288892)/0.4288892)*100
+```
+       Growth rate of frond number (GRFrond)
+```{r}
+dfFrond<-df1[complete.cases(df1$GRFrond),]
+
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dfFrond, GRFrond~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G9:G10:G11)) 
+modelp<-glmmTMB(data=dfFrond, GRFrond~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G9:G10:G11),
+contrasts=list(Pretreat="contr.sum",TreatEnv="contr.sum"))
+sim1<-simulateResiduals(model,n=500, plot=T)
+plotResiduals(model, dfFrond$TreatEnv,  main=NULL);plotResiduals(model, dfFrond$Pretreat,  main=NULL)
+summary(model)
+car::Anova(modelp,type=3)
+
+# plot
+model<-glmmTMB(data=dfFrond, GRFrond~Pretreat1*TreatEnv1+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G9:G10:G11))
+text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,
+                 TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+pdf(".../FigS2.4a.pdf",height=6,width=10)
+ggplot(dfFrond,aes(TreatEnv1, GRFrond))+
+  geom_boxplot(aes(fill=Pretreat1))+
+  scale_color_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  scale_fill_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  labs(y="Growth rate of frond number per day",x="Treatment environment",color="Pre-\ntreatment\nenvironment",fill="Pre-\ntreatment\nenvironment")+
+  geom_text(data=text,aes(x = TreatEnv1, y = 0.45,label=label),size = 8, family = "sans")+
+  geom_text(aes(x = 4,y=0.8), label = "P-value\nPre-treatment 0.782\nTreatment 2x10-16\nPretreat x Treat 0.961",size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,0.8,by=0.2),limits = c(0,0.8),expand=c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+  dev.off()
+  
+N=dfFrond%>%dplyr::group_by(Pretreat,TreatEnv)%>%dplyr::summarise(meanGRFrond=mean(GRFrond,rm.na=T),n=length(GRFrond));min(N$n);max(N$n)
+dfFrond%>%dplyr::group_by(TreatEnv)%>%dplyr::summarise(meanGRFrond=mean(GRFrond,rm.na=T))
+```
+       Surface area per frond (AreaFrond)
+```{r}
+dfAreaFrond<-df1[complete.cases(df1$AreaFrond),]
+
+options(contrasts = c("contr.treatment", "contr.poly"))
+# statistics
+model<-glmmTMB(data=dfAreaFrond, AreaFrond~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G9:G10:G11)) 
+model<-glmmTMB(data=dfAreaFrond, AreaFrond~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G11))
+modelp<-glmmTMB(data=dfAreaFrond, AreaFrond~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G11),
+contrasts=list(Pretreat="contr.sum",TreatEnv="contr.sum")) 
+sim1<-simulateResiduals(model,n=500, plot=T)
+plotResiduals(model, dfAreaFrond$TreatEnv,  main=NULL);plotResiduals(model, dfAreaFrond$Pretreat,  main=NULL)
+summary(model)
+car::Anova(modelp,type=3)
+
+# plot
+model<-glmmTMB(data=dfAreaFrond, AreaFrond~Pretreat1*TreatEnv1+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G9:G10:G11)) 
+text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,
+                 TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+dfAreaFrond.1<-(dfAreaFrond %>% dplyr::group_by(TreatEnv1,Pretreat1) %>% dplyr::summarise(
+  meanAreaFrond   = mean(AreaFrond),
+  se = (sd(AreaFrond)/sqrt(length(AreaFrond)))))
+
+pdf(".../FigS2.6a.pdf",height=6,width=10)
+ggplot(dfAreaFrond,aes(TreatEnv1, AreaFrond))+
+  geom_boxplot(aes(fill=Pretreat1))+
+  scale_color_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  scale_fill_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  guides(fill="none")+
+  labs(y="Area per frond (mm2)",x="Treatment environment",color="Pre-\ntreatment\nenvironment",fill="Pre-\ntreatment\nenvironment")+
+  geom_text(data=text,aes(x = TreatEnv1, y =27,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,60,by=20),limits = c(0,60),expand=c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+  dev.off()
+  
+N=dfAreaFrond%>%dplyr::group_by(Pretreat,TreatEnv)%>%dplyr::summarise(meanAreaFrond=mean(AreaFrond,rm.na=T),n=length(AreaFrond));min(N$n);max(N$n)
+dfAreaFrond%>%dplyr::group_by(TreatEnv)%>%dplyr::summarise(meanAreaFrond=mean(AreaFrond,rm.na=T))
+((18.91455-26.12955)/26.12955)*100
+((21.72009-26.12955)/26.12955)*100
+```
+       Biomass per frond (BioFrond)
+```{r}
+dfBioFrond<-df1[complete.cases(df1$BioFrond),]
+
+# statistics
+model<-glmmTMB(data=dfBioFrond, BioFrond~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G9:G10:G11))
+model<-glmmTMB(data=dfBioFrond, BioFrond~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G11))
+modelp<-glmmTMB(data=dfBioFrond, BioFrond~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G11),
+contrasts=list(Pretreat="contr.sum",TreatEnv="contr.sum"))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+plotResiduals(model, dfBioFrond$TreatEnv,  main=NULL);plotResiduals(model, dfBioFrond$Pretreat,  main=NULL);plotResiduals(model, dfBioFrond$Genotype,  main=NULL)
+summary(model)
+car::Anova(modelp,type=3)
+
+# plot
+model<-glmmTMB(data=dfBioFrond, BioFrond~Pretreat1*TreatEnv1+(1|Replicate)+(1|Genotype)+(1|Rack)+(1|G9:G10:G11))
+text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,
+                 TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+dfBioFrond.1<-(dfBioFrond %>% dplyr::group_by(TreatEnv1,Pretreat1) %>% dplyr::summarise(BioFrond   = mean(BioFrond, na.rm = TRUE)))
+
+pdf(".../FigS2.6b.pdf",height=10,width=10)
+ggplot(dfBioFrond,aes(TreatEnv1, BioFrond))+
+  geom_boxplot(aes(fill=Pretreat1))+
+  scale_color_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  scale_fill_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  guides(fill="none")+
+  geom_text(data=text,aes(x = TreatEnv1, y =8,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,10,by=2),limits = c(0,10),expand=c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+  dev.off()
+    
+N=dfBioFrond%>%dplyr::group_by(Pretreat,TreatEnv)%>%dplyr::summarise(meanBioFrond=mean(BioFrond,rm.na=T),n=length(BioFrond));min(N$n);max(N$n)
+dfBioFrond%>%dplyr::group_by(TreatEnv)%>%dplyr::summarise(meanBioFrond=mean(BioFrond,rm.na=T))
+((3.967743-6.041136)/6.041136)*100
+((4.480052-26.12955)/26.12955)*100
+```
+       Surface area per biomass (AreaBio)
+```{r}
+dfAreaBio<-df1[complete.cases(df1$AreaBio),]
+
+# statistics
+model<-glmmTMB(data=dfAreaBio, AreaBio~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G9:G10:G11))
+model<-glmmTMB(data=dfAreaBio, AreaBio~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G11),family=Gamma(log))
+modelp<-glmmTMB(data=dfAreaBio, AreaBio~Pretreat*TreatEnv+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G11),family=Gamma(log),
+contrasts=list(Pretreat="contr.sum",TreatEnv="contr.sum"))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+plotResiduals(model, dfAreaBio$TreatEnv,  main=NULL);plotResiduals(model, dfAreaBio$Pretreat,  main=NULL);plotResiduals(model, dfAreaBio$Genotype,  main=NULL)
+summary(model)
+car::Anova(modelp,type="III")
+
+# plots
+model<-glmmTMB(data=dfAreaBio, AreaBio~Pretreat1*TreatEnv1+(1|Replicate)+(1|Genotype)+(1|offsringStart)+(1|Rack)+(1|G11),family=Gamma(log))
+text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,
+                 TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+pdf(".../FigS2.6c.pdf",height=10,width=10)
+ggplot(dfAreaBio,aes(TreatEnv1, AreaBio))+
+  geom_boxplot(aes(fill=Pretreat1))+
+  scale_color_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  scale_fill_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  guides(fill="none")+
+  geom_text(data=text,aes(x = TreatEnv1, y =6,label=label),size = 8, family = "sans")+
+  geom_text(aes(x = 4, y = 8), label = "P-value\nPre-treatment 0.25\nTreatment 2x10-16\nPretreat x Treat 0.49",size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,8,by=2),limits = c(0,8),expand=c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+  dev.off()
+  
+N=dfAreaBio%>%dplyr::group_by(Pretreat,TreatEnv)%>%dplyr::summarise(meanAreaBio=mean(AreaBio,rm.na=T),n=length(AreaBio));min(N$n);max(N$n)
+dfAreaBio%>%dplyr::group_by(TreatEnv)%>%dplyr::summarise(meanAreaBio=mean(AreaBio,rm.na=T))
+((4.868329-4.398057)/4.398057)*100
+((5.052677-4.398057)/4.398057)*100
+```
+
+       Aphid growth rate (GRAphid)
+```{r}
+dfAphid<-df1[complete.cases(df1$GRAphid),]
+
+## Effects of the pre-treatment
+# statistics 
+model<-glmmTMB(data=dfAphid, GRAphid~Pretreat+(1|Genotype)+(1|Replicate)+(1|G9:G10:G11))
+sim1<-simulateResiduals(model,n=500, plot=T)
+summary(model)
+car::Anova(model,type=2)
+
+# plot
+pdf(".../FigS3.1.pdf",height=6,width=6)
+ggplot(dfAphid,aes(Pretreat1, GRAphid))+
+  geom_violin( alpha=0.5,width=1.2,aes(col=Pretreat1, fill=Pretreat1))+
+  geom_boxplot(width=0.5,aes(fill=Pretreat1),size=0.2)+
+  guides(fill="none",color="none")+
+  scale_color_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  scale_fill_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  labs(y="Aphid growth rate per day",x="Pre-treatment",color="Pre-\ntreatment\nenvironment",fill="Pre-\ntreatment\nenvironment")+
+  scale_y_continuous(breaks=seq(0.1 ,0.4,by=0.1),limits = c(0.08 ,0.4))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        #text=element_text(color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+  dev.off()
+
+## Effect of the genotype and the pre-treatment
+# statistics
+model<-glmmTMB(data=dfAphid, GRAphid~Pretreat*Genotype+(1|Replicate)+(1|G9:G10:G11))
+modelp<-glmmTMB(data=dfAphid, GRAphid~Pretreat*Genotype+(1|Replicate)+(1|G9:G10:G11),
+contrasts=list(Pretreat="contr.sum",Genotype="contr.sum"))
+sim1<-simulateResiduals(model,n=500, plot=T)
+summary(model)
+car::Anova(modelp,type=3)
+
+a<-round(car::Anova(glmmTMB(data=dfAphid[dfAphid$Genotype=="4",],GRArea~Pretreat+(1|Replicate)))$`Pr(>Chisq)`,3)
+b<-round(car::Anova(glmmTMB(data=dfAphid[dfAphid$Genotype=="8",],GRArea~Pretreat+(1|Replicate)))$`Pr(>Chisq)`,3)
+c<-round(car::Anova(glmmTMB(data=dfAphid[dfAphid$Genotype=="35",],GRArea~Pretreat+(1|Replicate)))$`Pr(>Chisq)`,3)
+d<-round(car::Anova(glmmTMB(data=dfAphid[dfAphid$Genotype=="43",],GRArea~Pretreat+(1|Replicate)))$`Pr(>Chisq)`,3)
+e<-round(car::Anova(glmmTMB(data=dfAphid[dfAphid$Genotype=="198",],GRArea~Pretreat+(1|Replicate)))$`Pr(>Chisq)`,3)
+f<-round(car::Anova(glmmTMB(data=dfAphid[dfAphid$Genotype=="212",],GRArea~Pretreat+(1|Replicate)))$`Pr(>Chisq)`,3)
+ann_text<-data.frame(label=paste0("P=",c(a,b,c,d,e,f)),Genotype=c("4","8","35","43","198","212"))
+
+# plot
+pdf(".../Fig3a.pdf",height=6,width=10)
+ggplot(dfAphid,aes(Genotype, GRAphid))+
+  geom_jitter(aes(fill=Pretreat1), shape=21,size=5,position = position_dodge(1))+
+  geom_boxplot(aes(fill=Pretreat1))+
+  scale_color_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  scale_fill_manual(values = c("Cu-"="#0056B3", "Cu+"="#CC0000"))+
+  labs(y="Aphid growth rate per day",x="Genotype",color="Pre-\ntreatment\nenvironment",fill="Pre-\ntreatment\nenvironment")+
+  geom_text(aes(x = 4, y = 0.4), label = "P-value\nPre-treatment 0.008\nGenotype 0.046\nPretreat x Geno 0.054",size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0.1 ,0.4,by=0.1),limits = c(0.08 ,0.4))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        #text=element_text(color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+  dev.off()
+  
+N=dfAphid%>%dplyr::group_by(Pretreat,Genotype)%>%dplyr::summarise(meanAreaFrond=mean(GRAphid,rm.na=T),n=length(GRAphid));min(N$n);max(N$n)
+```
+
+     Does morphology variables correlate among each other?
+     
+      Biomass per frond (BioFrond) correlates with surface area per frond (AreaFrond)
+```{r}
+df1.2<-df1[complete.cases(df1$BioFrond),]
+df1.2<-df1.2[complete.cases(df1.2$AreaFrond),]
+
+# Analysis per environment 
+model<-glmmTMB(data=df1.2[df1.2$TreatEnv=="Control",], BioFrond~AreaFrond+(1|Pretreat))
+sim1<-simulateResiduals(model,n=500, plot=T)
+car::Anova(model)
+model<-glmmTMB(data=df1.2[df1.2$TreatEnv=="Copper",], BioFrond~AreaFrond+(1|Pretreat))
+sim1<-simulateResiduals(model,n=500, plot=T)
+car::Anova(model)
+model<-glmmTMB(data=df1.2[df1.2$TreatEnv=="zAphid",], BioFrond~AreaFrond+(1|Pretreat))
+sim1<-simulateResiduals(model,n=500, plot=T)
+car::Anova(model)
+
+pdf(".../FigS2.5a.pdf",height=5,width=20)
+ggplot(df1.2,aes(BioFrond, AreaFrond))+
+  geom_point(col="black",size=2)+
+  facet_grid(~TreatEnv1)+
+  geom_smooth(method="lm",se=F,size=1,aes(col=TreatEnv1))+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  guides(col="none")+
+  labs(x="Frond biomass per frond",y="Surface area per frond")+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE,size = 8, family = "sans")+
+  scale_x_continuous(breaks=seq(1,12,by=2),limits = c(1,11), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(5,45,by=10),limits = c(5,45), expand = c(0,0))+
+  theme(axis.text = element_text(size = 20,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+
+N=df1.2%>%dplyr::group_by(TreatEnv)%>%dplyr::summarise(mean1=mean(BioFrond,rm.na=T),n=length(BioFrond));min(N$n);max(N$n)
+```
+       Surface area per biomass (AreaBio) correlates with surface area per frond (AreaFrond)
+```{r}
+df1.2<-df1[complete.cases(df1$AreaBio),]
+df1.2<-df1.2[complete.cases(df1.2$AreaFrond),]
+
+# Analysis per environment 
+model<-glmmTMB(data=df1.2[df1.2$TreatEnv=="Control",], AreaFrond~AreaBio+(1|Pretreat))
+sim1<-simulateResiduals(model,n=500, plot=T)
+car::Anova(model)
+model<-glmmTMB(data=df1.2[df1.2$TreatEnv=="Copper",], AreaFrond~AreaBio+(1|Pretreat))
+sim1<-simulateResiduals(model,n=500, plot=T)
+car::Anova(model)
+model<-glmmTMB(data=df1.2[df1.2$TreatEnv=="zAphid",], AreaFrond~AreaBio+(1|Pretreat))
+sim1<-simulateResiduals(model,n=500, plot=T)
+car::Anova(model)
+
+pdf(".../FigS2.5b.pdf",height=5,width=20)
+ggplot(df1.2,aes(AreaBio, AreaFrond))+
+  geom_point(col="black",size=2)+
+  facet_grid(~TreatEnv1)+
+  geom_smooth(method="lm",se=F,size=1,aes(col=TreatEnv1))+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  guides(col="none")+
+  labs(x="Specific frond area",y="Surface area per frond")+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE,size = 8, family = "sans")+
+  scale_x_continuous(breaks=seq(3,8,by=1),limits = c(3,8), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(5,45,by=10),limits = c(5,45), expand = c(0,0))+
+  theme(axis.text = element_text(size = 20,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=df1.2%>%dplyr::group_by(TreatEnv)%>%dplyr::summarise(mean1=mean(AreaFrond,rm.na=T),n=length(AreaFrond));min(N$n);max(N$n)
+```
+       Surface area per biomass (AreaBio) correlates with biomass per frond (BioFrond) 
+```{r}
+df1.2<-df1[complete.cases(df1$AreaBio),]
+df1.2<-df1.2[complete.cases(df1.2$BioFrond),]
+
+# Analysis per environment 
+
+model<-glmmTMB(data=df1.2[df1.2$TreatEnv=="Control",], BioFrond~AreaBio+(1|Pretreat))
+sim1<-simulateResiduals(model,n=500, plot=T)
+car::Anova(model)
+model<-glmmTMB(data=df1.2[df1.2$TreatEnv=="Copper",],  BioFrond~AreaBio+(1|Pretreat))
+sim1<-simulateResiduals(model,n=500, plot=T)
+car::Anova(model)
+model<-glmmTMB(data=df1.2[df1.2$TreatEnv=="zAphid",],  BioFrond~AreaBio+(1|Pretreat),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T)
+car::Anova(model)
+
+pdf(".../FigS2.5c.pdf",height=5,width=20)
+ggplot(df1.2,aes(AreaBio, BioFrond))+
+  geom_point(col="black",size=2)+
+  facet_grid(~TreatEnv1)+
+  geom_smooth(method="lm",se=F,size=1,aes(col=TreatEnv1))+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  guides(col="none")+
+  labs(x="Area per biomass",y="Biomass per frond")+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE,size = 8, family = "sans")+
+  scale_x_continuous(breaks=seq(3,9,by=2),limits = c(3,9), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0,12,by=2),limits = c(0,12), expand = c(0,0))+
+  theme(axis.text = element_text(size = 20,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+
+N=df1.2%>%dplyr::group_by(TreatEnv)%>%dplyr::summarise(mean1=mean(BioFrond,rm.na=T),n=length(BioFrond));min(N$n);max(N$n)
+```
+
+
+##############################################################################
+###### Analysis of the pre-treatment ratio of fitness and morphology  ########
+##############################################################################
+
+       Pre-treatmet ratios of fitness and phenotype
+```{r}
+df2<-data.table(df1); dim(df2)
+
+for (x in gen){
+for (y in env){
+      b<-       as.numeric(with(df2[Genotype==x&TreatEnv==y&Pretreat=="Cu-",], mean(GRArea, na.rm = TRUE)))
+	                              df2[Genotype==x&TreatEnv==y&Pretreat=="Cu+", PreMeanGRArea := GRArea/b]
+      d<-       as.numeric(with(df2[Genotype==x&TreatEnv==y&Pretreat=="Cu-",], mean(GRFrond, na.rm = TRUE)))
+	                              df2[Genotype==x&TreatEnv==y&Pretreat=="Cu+", PreMeanGRFrond := GRFrond/d]
+      f<-       as.numeric(with(df2[Genotype==x&TreatEnv==y&Pretreat=="Cu-",], mean(GRAphid, na.rm = TRUE)))
+	                              df2[Genotype==x&TreatEnv==y&Pretreat=="Cu+", PreMeanGRAphid := GRAphid/f]
+      h<-       as.numeric(with(df2[Genotype==x&TreatEnv==y&Pretreat=="Cu-",],mean(AreaFrond, na.rm = TRUE)))
+	                              df2[Genotype==x&TreatEnv==y&Pretreat=="Cu+", PreMeanAreaFrond := AreaFrond/h]
+      j<-       as.numeric(with(df2[Genotype==x&TreatEnv==y&Pretreat=="Cu-",],mean(BioFrond, na.rm = TRUE)))
+	                              df2[Genotype==x&TreatEnv==y&Pretreat=="Cu+", PreMeanBioFrond := BioFrond/j]
+      l<-       as.numeric(with(df2[Genotype==x&TreatEnv==y&Pretreat=="Cu-",],mean(AreaBio, na.rm = TRUE)))
+	                              df2[Genotype==x&TreatEnv==y&Pretreat=="Cu+", PreMeanAreaBio := AreaBio/l]
+}}
+
+
+df3<-df2[Pretreat=="Cu+",]
+df3<-data.table(df3[,-c(15:21)])
+```
+
+      Does the pre-treatment effect of copper excess on plant fitness and morphology vary depending on the genotype and recurrent stress?
+
+  
+        Growth rate of surface area pre-treatment ratio (PreMeanGRArea)
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanGRArea),]
+
+# statistics
+model<-glmmTMB(data=df3.2, PreMeanGRArea~Genotype*TreatEnv+(1|Replicate)+(1|G9:G10:G11))
+modelp<-glmmTMB(data=df3.2, PreMeanGRArea~Genotype*TreatEnv+(1|Replicate)+(1|G9:G10:G11),contrasts=list(Genotype="contr.sum",TreatEnv="contr.sum"))
+sim<-simulateResiduals(model,n=500, plot=T);testDispersion(sim)
+plotResiduals(model, df3.2$TreatEnv,  main=NULL);plotResiduals(model, df3.2$Genotype,  main=NULL)
+summary(model)
+car::Anova(modelp,type="III")
+
+# plot
+df3.4<-(df3.2 %>% dplyr::group_by(TreatEnv1,Genotype) %>% dplyr::summarise(MeanPreMeanGRArea   = mean(PreMeanGRArea, na.rm = TRUE),se = (sd(PreMeanGRArea)/sqrt(length(PreMeanGRArea)))))
+
+pdf(".../Fig2b.pdf",height=8,width=12)
+ggplot()+
+  geom_point(data=df3.4,aes(x=Genotype, y=MeanPreMeanGRArea,col=TreatEnv1,fill=Genotype), binaxis = "y", stackdir = "center",size=8, position=position_dodge(0.5))+
+  geom_errorbar(data=df3.4,aes(x=Genotype, y=MeanPreMeanGRArea,col=TreatEnv1,ymin=MeanPreMeanGRArea-se, ymax=MeanPreMeanGRArea+se), 
+                width=0.5, position=position_dodge(0.80),size=0.2)+
+  facet_grid(~factor(TreatEnv1,levels=c("Control","Copper","Diquat","Salt","Aphid")))+
+  guides(color="none",fill="none")+
+  geom_hline(yintercept=1,linetype="dashed",size=0.2)+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  labs(y="Surface area per frond of\ncopper/control pre-treated plants",x="Treatment environment")+
+  scale_y_continuous(breaks=seq(0.6,1.3,by=0.1),limits = c(0.6,1.3), expand = c(0,0))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=df3.2%>%dplyr::group_by(TreatEnv,Genotype)%>%dplyr::summarise(mean1=mean(PreMeanGRArea,rm.na=T),n=length(PreMeanGRArea));min(N$n);max(N$n)
+```
+               Deviation from one
+```{r}
+df7<-data.table(df3[complete.cases(df3$PreMeanGRArea),])
+df7$AbsDev_PreMeanGRArea <- abs(df7$PreMeanGRArea - 1)
+
+# statistics
+model<-glmmTMB(data=df7,AbsDev_PreMeanGRArea~Genotype*TreatEnv+(1|Replicate))
+model<-glmmTMB(data=df7,AbsDev_PreMeanGRArea~Genotype*TreatEnv+(1|Replicate),family=Gamma(log))
+modelp<-glmmTMB(data=df7,AbsDev_PreMeanGRArea~Genotype*TreatEnv+(1|Replicate),family=Gamma(log),contrasts=list(Genotype="contr.sum",TreatEnv="contr.sum"))
+sim<-simulateResiduals(model,n=500, plot=T)
+car::Anova(modelp)
+
+# plots
+model<-glmmTMB(data=df7,AbsDev_PreMeanGRArea~Genotype*TreatEnv1+(1|Replicate),family=Gamma(log))
+text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,
+                 TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+df7Average<-(df7 %>% dplyr::group_by(Genotype,TreatEnv,TreatEnv1) %>% dplyr::summarise(
+  MeanAbsDev_PreMeanGRArea = mean(AbsDev_PreMeanGRArea, na.rm = TRUE),
+  se=(sd(AbsDev_PreMeanGRArea)/sqrt(length(AbsDev_PreMeanGRArea)))))
+
+pdf(".../Fig2c.pdf",height=6,width=10)
+ggplot()+
+  geom_violin(data=df7,aes(x=TreatEnv1, y=AbsDev_PreMeanGRArea,fill=TreatEnv1,colour=TreatEnv1),size=0.5,width=1.2)+
+  geom_jitter(data=df7Average,aes(x=TreatEnv1,y=MeanAbsDev_PreMeanGRArea),size=2)+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  geom_text(data=text,mapping=aes(x=TreatEnv1,y=0.5,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,0.5,by=0.1),limits = c(0,0.53), expand = c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+dev.off()
+```
+               Does fitness pre-treatment ratio correlate among treatments?
+```{r}
+# create data set
+df3.5<-df3[,c(1,4,6,15)]
+cordf<-merge(df3.5[df3.5$TreatEnv=="Control",],df3.5[df3.5$TreatEnv=="Copper",],by=c("Replicate","Genotype"));
+      cordf<-cordf[,-c(3,5)];colnames(cordf)<-c("Replicate","Genotype","Control","Copper")
+cordf<-merge(cordf,df3.5[df3.5$TreatEnv=="zAphid",],by=c("Replicate","Genotype"));
+       cordf<-cordf[,-5];colnames(cordf)<-c("Replicate","Genotype","Control","Copper","Aphid")
+cordf2<-cordf[,-c(1,2)]
+
+# statistics
+model<-glmmTMB(data=cordf,Control~Copper+(1|Genotype),dispformula = ~Copper)
+sim<-simulateResiduals(model,n=500, plot=T)
+car::Anova(model,type="II")
+model<-glmmTMB(data=cordf,Control~Aphid+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+car::Anova(model,type="II")
+model<-glmmTMB(data=cordf,Aphid~Copper+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+car::Anova(model,type="II")
+
+# plot
+# Function to add R2 from and p-values from lm model for comparison 
+custom_lm_r2 <- function(data, mapping, ...) {
+  x <- eval_data_col(data, mapping$x)
+  y <- eval_data_col(data, mapping$y)
+  model <- lm(y ~ x)
+  est <- coef(model)
+  summary_model <- summary(model)
+  r2 <- summary_model$r.squared
+  p.val <- summary_model$coefficients[2, 4]
+  ggplot(data = data, mapping = mapping) +
+    geom_point(alpha = 0.3) +
+    geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+    annotate("text", x = mean(range(x)), y = max(range(y)),
+             label = sprintf("R² = %.2f\np = %.2g", r2, p.val),
+             hjust = 0.5, vjust = 1, size = 3) +
+    theme_minimal()
+}
+
+pdf(".../FigS2.3.pdf",height=10,width=10)
+ggpairs(cordf2,
+        lower = list(continuous = custom_lm_r2)
+) + theme_bw()
+dev.off()
+```
+
+        Growth rate of frond number pre-treatment ratio (PreMeanGRFrond)
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanGRFrond),]
+
+# statistics
+model<-glmmTMB(data=df3.2, PreMeanGRFrond~Genotype*TreatEnv+(1|Replicate)+(1|G9:G10:G11))
+modelp<-glmmTMB(data=df3.2, PreMeanGRFrond~Genotype*TreatEnv+(1|Replicate)+(1|G9:G10:G11),
+contrasts=list(Genotype="contr.sum",TreatEnv="contr.sum"))
+sim<-simulateResiduals(model,n=500, plot=T);testDispersion(sim)
+plotResiduals(model, df3.2$TreatEnv,  main=NULL);plotResiduals(model, df3.2$Genotype,  main=NULL)
+summary(model)
+car::Anova(modelp,type=3)
+
+# plot
+text<-data.frame(label=cld(emmeans(modelp,pairwise~TreatEnv), Letters = letters)$.group,
+                 TreatEnv1=cld(emmeans(modelp,pairwise~TreatEnv), Letters = letters)$TreatEnv)
+
+df3.4<-(df3.2 %>% dplyr::group_by(TreatEnv1,Genotype) %>% dplyr::summarise(
+  meanPreMeanGRFrond   = mean(PreMeanGRFrond),
+  se = (sd(PreMeanGRFrond)/sqrt(length(PreMeanGRFrond)))))
+
+pdf(".../FigS2.4b.pdf",height=8,width=12)
+ggplot()+
+  geom_point(data=df3.4,aes(x=Genotype, y=meanPreMeanGRFrond,col=TreatEnv1), binaxis = "y", stackdir = "center",size=5, position=position_dodge(0.80))+
+  geom_errorbar(data=df3.4,aes(x=Genotype, y=meanPreMeanGRFrond,col=TreatEnv1,ymin=meanPreMeanGRFrond-se, ymax=meanPreMeanGRFrond+se), 
+                width=0.5, position=position_dodge(0.80),size=0.2)+
+  geom_hline(yintercept=1,linetype="dashed",size=0.2)+
+  facet_grid(~TreatEnv1)+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  guides(color="none",fill="none")+
+  labs(y="Growth rate of frond number per day of\ncopper/control pre-treated plants",x="Treatment environment")+
+  scale_y_continuous(breaks=seq(0.7,1.2,by=0.1),limits = c(0.7,1.2), expand = c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=df3.2%>%dplyr::group_by(TreatEnv,Genotype)%>%dplyr::summarise(mean1=mean(PreMeanGRFrond,rm.na=T),n=length(PreMeanGRFrond));min(N$n);max(N$n)
+```
+               Deviation from one
+```{r}
+df7<-data.table(df3[complete.cases(df3$PreMeanGRFrond),])
+df7$AbsDev_PreMeanGRFrond <- abs(df7$PreMeanGRFrond - 1)
+
+# statistics 
+model<-glmmTMB(data=df7,AbsDev_PreMeanGRFrond~Genotype*TreatEnv+(1|Replicate))
+modelp<-glmmTMB(data=df7,AbsDev_PreMeanGRFrond~Genotype*TreatEnv+(1|Replicate),
+contrasts=list(Genotype="contr.sum",TreatEnv="contr.sum"))
+sim<-simulateResiduals(model,n=500, plot=T)
+car::Anova(modelp,type=3)
+
+# plot
+df7Average<-(df7 %>% dplyr::group_by(Genotype,TreatEnv,TreatEnv1) %>% dplyr::summarise(
+  MeanAbsDev_PreMeanGRFrond = mean(AbsDev_PreMeanGRFrond, na.rm = TRUE),
+  se=(sd(AbsDev_PreMeanGRFrond)/sqrt(length(AbsDev_PreMeanGRFrond)))))
+
+pdf(".../FigS2.4c.pdf",height=6,width=10)
+ggplot()+
+  geom_violin(data=df7,aes(x=TreatEnv1, y=AbsDev_PreMeanGRFrond,fill=TreatEnv1,colour=TreatEnv1),size=0.5)+
+  geom_jitter(data=df7Average,aes(x=TreatEnv1, y=MeanAbsDev_PreMeanGRFrond),size=2)+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_y_continuous( expand = c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+dev.off()
+```
+
+       Surface area per frond pre-treatment ratio (PreMeanAreaFrond)
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanAreaFrond),]
+
+# statistics
+model<-glmmTMB(data=df3.2, PreMeanAreaFrond~Genotype*TreatEnv+(1|Replicate)+(1|G9:G10:G11))
+modelp<-glmmTMB(data=df3.2, PreMeanAreaFrond~Genotype*TreatEnv+(1|Replicate)+(1|G9:G10:G11),contrasts=list(Genotype="contr.sum",TreatEnv="contr.sum"))
+sim<-simulateResiduals(model,n=500, plot=T);testDispersion(sim)
+plotResiduals(model, df3.2$TreatEnv,  main=NULL);plotResiduals(model, df3.2$Genotype,  main=NULL)
+summary(model)
+car::Anova(modelp,type="III")
+
+df3.4<-(df3.2 %>% dplyr::group_by(TreatEnv1,Genotype) %>% dplyr::summarise(MeanPreMeanAreaFrond   = mean(PreMeanAreaFrond, na.rm = TRUE),se = (sd(PreMeanAreaFrond)/sqrt(length(PreMeanAreaFrond)))))
+
+pdf(".../FigS2.6d.pdf",height=8,width=12)
+ggplot()+
+  geom_point(data=df3.4,aes(x=Genotype, y=MeanPreMeanAreaFrond,col=TreatEnv1,fill=Genotype), binaxis = "y", stackdir = "center",size=8, position=position_dodge(0.5))+
+  geom_errorbar(data=df3.4,aes(x=Genotype, y=MeanPreMeanAreaFrond,col=TreatEnv1,ymin=MeanPreMeanAreaFrond-se, ymax=MeanPreMeanAreaFrond+se), 
+                width=0.5, position=position_dodge(0.80),size=0.2)+
+  facet_grid(~(TreatEnv1))+
+  guides(color="none",fill="none")+
+  geom_hline(yintercept=1,linetype="dashed",size=0.2)+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  labs(y="Surface area per frond of\ncopper/control pre-treated plants",x="Treatment environment")+
+  scale_y_continuous(breaks=seq(0.7,1.2,by=0.1),limits = c(0.7,1.2), expand = c(0,0))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=df3.2%>%dplyr::group_by(TreatEnv)%>%dplyr::summarise(mean1=mean(PreMeanAreaFrond,rm.na=T),n=length(PreMeanAreaFrond));min(N$n);max(N$n)
+((0.9673060-0.9963812)/0.9963812)*100
+((0.9688077-0.9963812)/0.9963812)*100
+N=df3.2%>%dplyr::group_by(TreatEnv,Genotype)%>%dplyr::summarise(mean1=mean(PreMeanAreaFrond,rm.na=T),n=length(PreMeanAreaFrond));min(N$n);max(N$n)
+```
+               Deviation from one
+```{r}
+df7<-data.table(df3[complete.cases(df3$PreMeanAreaFrond),])
+df7$AbsDev_PreMeanAreaFrond <- abs(df7$PreMeanAreaFrond - 1)
+
+# statistics 
+model<-glmmTMB(data=df7,AbsDev_PreMeanAreaFrond~Genotype*TreatEnv+(1|Replicate))
+modelp<-glmmTMB(data=df7,AbsDev_PreMeanAreaFrond~Genotype*TreatEnv+(1|Replicate),contrasts=list(Genotype="contr.sum",TreatEnv="contr.sum"))
+sim<-simulateResiduals(model,n=500, plot=T)
+car::Anova(modelp,type="III")
+
+# plot
+model<-glmmTMB(data=df7,AbsDev_PreMeanAreaFrond~Genotype*TreatEnv1+(1|Replicate))
+text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,
+                 TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+df7Average<-(df7 %>% dplyr::group_by(Genotype,TreatEnv,TreatEnv1) %>% dplyr::summarise(
+  MeanAbsDev_PreMeanAreaFrond = mean(AbsDev_PreMeanAreaFrond, na.rm = TRUE),
+  se=(sd(AbsDev_PreMeanAreaFrond)/sqrt(length(AbsDev_PreMeanAreaFrond)))))
+
+pdf(".../FigS2.6g.pdf",height=6,width=10)
+ggplot()+
+  geom_violin(data=df7,aes(x=TreatEnv1, y=AbsDev_PreMeanAreaFrond,fill=TreatEnv1,colour=TreatEnv1),size=0.5)+
+  geom_jitter(data=df7Average,aes(x=TreatEnv1, y=MeanAbsDev_PreMeanAreaFrond),size=2)+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  geom_text(data=text,mapping=aes(x=TreatEnv1,y=0.35,label=label),size = 8, family = "sans")+
+  scale_y_continuous( expand = c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+dev.off()
+```
+
+
+       Biomass per frond pre-treatment ratio (PreMeanBioFrond)
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanBioFrond),]
+
+# statistics
+model<-glmmTMB(data=df3.2, PreMeanBioFrond~Genotype*TreatEnv+(1|Replicate)+(1|G9:G10:G11))
+modelp<-glmmTMB(data=df3.2, PreMeanBioFrond~Genotype*TreatEnv+(1|Replicate)+(1|G9:G10:G11),contrasts=list(Genotype="contr.sum",TreatEnv="contr.sum"))
+sim<-simulateResiduals(model,n=500, plot=T);testDispersion(sim)
+plotResiduals(model, df3.2$TreatEnv,  main=NULL);plotResiduals(model, df3.2$Genotype,  main=NULL)
+summary(model)
+car::Anova(modelp,type="III")
+
+model<-glmmTMB(data=df3.2, PreMeanBioFrond~Genotype*TreatEnv1+(1|Replicate)+(1|G9:G10:G11))
+text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,
+                 TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+df3.4<-(df3.2 %>% dplyr::group_by(TreatEnv1,Genotype) %>% dplyr::summarise(MeanBioFrond   = mean(PreMeanBioFrond, na.rm = TRUE),se = (sd(PreMeanBioFrond)/sqrt(length(PreMeanBioFrond)))))
+
+pdf(".../FigS2.7e.pdf",height=8,width=12)
+ggplot()+
+  geom_point(data=df3.4,aes(x=Genotype, y=MeanBioFrond,col=TreatEnv1,fill=Genotype), binaxis = "y", stackdir = "center",size=8, position=position_dodge(0.5))+
+  geom_errorbar(data=df3.4,aes(x=Genotype, y=MeanBioFrond,col=TreatEnv1,ymin=MeanBioFrond-se, ymax=MeanBioFrond+se), width=0.5, position=position_dodge(0.80),size=0.2)+
+  #geom_point(data=df3.2,aes(Genotype, PreMeanBioFrond,col=TreatEnv1),alpha=0.2, width=0.3)+
+  facet_grid(~factor(TreatEnv1,levels=c("Control","Copper","Diquat","Salt","Aphid")))+
+  guides(color="none",fill="none")+
+  geom_hline(yintercept=1,linetype="dashed",size=0.2)+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  #geom_text(data=ann_text,mapping=aes(x=c("Copper","Diquat","Salt","Aphid"),y=c(1.5,1.4,1.3,1.2),label=label))+
+  labs(y="Biomass per frond of\ncopper/control pre-treated plants",x="Treatment environment")+
+  #scale_y_continuous(breaks=seq(0.6,1.4,by=0.2),limits = c(0.56,1.4), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0.7,1.2,by=0.1),limits = c(0.7,1.2), expand = c(0,0))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=df3.2%>%dplyr::group_by(TreatEnv,Genotype)%>%dplyr::summarise(mean1=mean(PreMeanBioFrond,rm.na=T),n=length(PreMeanBioFrond));min(N$n);max(N$n)
+```
+               Deviation from one
+```{r}
+df7<-data.table(df3[complete.cases(df3$PreMeanBioFrond),])
+df7$AbsDev_PreMeanBioFrond <- abs(df7$PreMeanBioFrond - 1)
+
+# statistics 
+model<-glmmTMB(data=df7,AbsDev_PreMeanBioFrond~Genotype*TreatEnv+(1|Replicate))
+model<-glmmTMB(data=df7,AbsDev_PreMeanBioFrond~Genotype*TreatEnv+(1|Replicate),family=Gamma(log))
+modelp<-glmmTMB(data=df7,AbsDev_PreMeanBioFrond~Genotype*TreatEnv+(1|Replicate),family=Gamma(log),contrasts=list(Genotype="contr.sum",TreatEnv="contr.sum"))
+sim<-simulateResiduals(model,n=500, plot=T)
+car::Anova(modelp,type="III")
+
+# plot
+model<-glmmTMB(data=df7,AbsDev_PreMeanBioFrond~Genotype*TreatEnv1+(1|Replicate),family=Gamma(log))
+text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,
+                 TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+df7Average<-(df7 %>% dplyr::group_by(Genotype,TreatEnv,TreatEnv1) %>% dplyr::summarise(
+  MeanAbsDev_PreMeanBioFrond = mean(AbsDev_PreMeanBioFrond, na.rm = TRUE),
+  se=(sd(AbsDev_PreMeanBioFrond)/sqrt(length(AbsDev_PreMeanBioFrond)))))
+
+pdf(".../FigS2.6h.pdf",height=6,width=10)
+ggplot()+
+  geom_violin(data=df7,aes(x=TreatEnv1, y=AbsDev_PreMeanBioFrond,fill=TreatEnv1,color=TreatEnv1),size=0.5,width=1.2)+
+  geom_jitter(data=df7Average,aes(x=TreatEnv1, y=MeanAbsDev_PreMeanBioFrond),size=2)+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  geom_text(data=text,mapping=aes(x=TreatEnv1,y=0.35,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,0.4,by=0.1),limits = c(0,0.45), expand = c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+dev.off()
+```
+
+       Surface area per biomass pre-treatment ratio (PreMeanAreaBio)
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanAreaBio),]
+
+# statistics
+model<-glmmTMB(data=df3.2, PreMeanAreaBio~Genotype*TreatEnv+(1|Replicate)+(1|G9:G10:G11))
+modelp<-glmmTMB(data=df3.2, PreMeanAreaBio~Genotype*TreatEnv+(1|Replicate)+(1|G9:G10:G11),contrasts=list(Genotype="contr.sum",TreatEnv="contr.sum"))
+sim<-simulateResiduals(model,n=500, plot=T);testDispersion(sim)
+plotResiduals(model, df3.2$TreatEnv,  main=NULL);plotResiduals(model, df3.2$Genotype,  main=NULL)
+summary(model)
+car::Anova(modelp,type="III")
+ 
+pdf(".../FigS2.6f.pdf",height=10,width=10)
+ggplot(df3.3,aes(x=TreatEnv1, y=PreMeanAreaBio))+
+  geom_col(aes(col=TreatEnv1, fill=TreatEnv1),width=0.6)+
+  geom_hline(yintercept=1,linetype="dashed",size=2)+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  labs(y="Specific frond area of\ncopper/control pre-treated plants",x="Treatment environment")+
+  geom_text(data=ann_text,mapping=aes(x=c("Control","Copper","Diquat","Salt","Aphid"),y=1.1,label=label),size = 8, family = "sans")+
+  geom_text(aes(x=4, y=1.2), label = "P-value\nTreatment 0.798",size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,1.4,by=0.2),limits = c(0,1.4), expand = c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=df3.2%>%dplyr::group_by(TreatEnv,Genotype)%>%dplyr::summarise(mean1=mean(PreMeanAreaBio,rm.na=T),n=length(PreMeanAreaBio));min(N$n);max(N$n)
+```
+               Deviation from one
+```{r}
+df7<-data.table(df3[complete.cases(df3$PreMeanAreaBio),])
+df7$AbsDev_PreMeanAreaBio <- abs(df7$PreMeanAreaBio - 1)
+
+model<-glmmTMB(data=df7,AbsDev_PreMeanAreaBio~TreatEnv*Genotype+(1|Replicate))
+model<-glmmTMB(data=df7,AbsDev_PreMeanAreaBio~TreatEnv*Genotype+(1|Replicate),family=Gamma(log))
+modelp<-glmmTMB(data=df7,AbsDev_PreMeanAreaBio~TreatEnv*Genotype+(1|Replicate),family=Gamma(log),contrasts=list(Genotype="contr.sum",TreatEnv="contr.sum"))
+sim<-simulateResiduals(model,n=500, plot=T)
+car::Anova(modelp,type="III")
+
+# plot
+model<-glmmTMB(data=df7,AbsDev_PreMeanAreaBio~Genotype*TreatEnv1+(1|Replicate),family=Gamma(log))
+text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,
+                 TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+df7Average<-(df7 %>% dplyr::group_by(Genotype,TreatEnv,TreatEnv1) %>% dplyr::summarise(
+  MeanAbsDev_PreMeanAreaBio = mean(AbsDev_PreMeanAreaBio, na.rm = TRUE),
+  se=(sd(AbsDev_PreMeanAreaBio)/sqrt(length(AbsDev_PreMeanAreaBio)))))
+
+
+pdf(".../FigS2.6i.pdf",height=6,width=10)
+ggplot()+
+  geom_violin(data=df7,aes(x=TreatEnv1, y=AbsDev_PreMeanAreaBio,fill=TreatEnv1,color=TreatEnv1),size=0.5,width=1.2)+
+  geom_jitter(data=df7Average,aes(x=TreatEnv1, y=MeanAbsDev_PreMeanAreaBio),size=2)+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  geom_text(data=text,mapping=aes(x=TreatEnv1,y=0.2,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,0.3,by=0.1),limits = c(0,0.3), expand = c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+dev.off()
+```
+
+
+      Do the pre-treatment ratios of plant fitness correlate to plant morphology?
+
+        Pre-treatment ratios of surface area growth rate (PreMeanGRArea) and surface area per frond (PreMeanAreaFrond) correlate under copper and aphid treatments
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanAreaFrond),]
+df3.2<-df3.2[complete.cases(df3.2$PreMeanGRArea),]
+
+# statistics
+  # Control treatment
+model<-glmmTMB(data=df3.2[df3.2$TreatEnv=="Control",], PreMeanAreaFrond~PreMeanGRArea+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+a<-round(car::Anova(model)[[3]],2)
+  # Copper treatment
+model<-glmmTMB(data=df3.2[df3.2$TreatEnv=="Copper",], PreMeanAreaFrond~PreMeanGRArea+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+b<-round(car::Anova(model)[[3]],13)
+  # Aphid treatment
+model<-glmmTMB(data=df3.2[df3.2$TreatEnv=="zAphid",], PreMeanAreaFrond~PreMeanGRArea+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+e<-round(car::Anova(model)[[3]],20)
+ann_text<-data.frame(label=paste0("P=",c(a,b,e)),TreatEnv1=c("Control","Copper","Aphid"))
+
+# plot
+pdf(".../FigS2.7a.pdf",height=5,width=20)
+ggplot(df3.2,aes(y=PreMeanAreaFrond, x=PreMeanGRArea))+
+  geom_point(col="black",size=2)+
+  facet_grid(~factor(TreatEnv1,levels=c("Control","Copper","Diquat","Salt","Aphid")))+
+  geom_smooth(method="lm",se=F,size=2,aes(col=TreatEnv1))+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  guides(col="none")+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE,size = 8, family = "sans")+
+  geom_text(data=ann_text,mapping=aes(x=0.9,y=0.7,label=label),size = 8, family = "sans")+
+  scale_x_continuous(breaks=seq(0.5,1.5,by=0.5),limits = c(0.48,1.5), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0.6,1.4,by=0.2),limits = c(0.6,1.4), expand = c(0,0))+
+  theme(axis.text = element_text(size = 20,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=df3.2%>%dplyr::group_by(TreatEnv)%>%dplyr::summarise(mean1=mean(PreMeanAreaFrond,rm.na=T),n=length(PreMeanAreaFrond));min(N$n);max(N$n)
+```
+        Pre-treatment ratios of surface area growth rate (PreMeanGRArea) and biomass per frond (PreMeanBioFrond) correlate under copper and aphid treatments
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanGRArea),]
+df3.2<-df3.2[complete.cases(df3.2$PreMeanBioFrond),]
+
+# statistics
+  # Control treatment
+model<-glmmTMB(data=df3.2[df3.2$TreatEnv=="Control",], PreMeanBioFrond~PreMeanGRArea+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+a<-round(car::Anova(model)[[3]],2)
+summary(lm(data=df3.2[df3.2$TreatEnv=="Control",], PreMeanBioFrond~PreMeanGRArea))
+  # Copper treatment
+model<-glmmTMB(data=df3.2[df3.2$TreatEnv=="Copper",], PreMeanBioFrond~PreMeanGRArea+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+b<-round(car::Anova(model)[[3]],4)
+  # Aphid treatment
+model<-glmmTMB(data=df3.2[df3.2$TreatEnv=="zAphid",], PreMeanBioFrond~PreMeanGRArea+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+e<-round(car::Anova(model)[[3]],20)
+ann_text<-data.frame(label=paste0("P=",c(a,b,e)),TreatEnv1=c("Control","Copper","Aphid"))
+
+# plot
+pdf(".../FigS2.7b.pdf",height=5,width=20)
+ggplot(df3.2,aes(y=PreMeanBioFrond, x=PreMeanGRArea))+
+  geom_point(col="black",size=2)+
+  facet_grid(~factor(TreatEnv1,levels=c("Control","Copper","Diquat","Salt","Aphid")))+
+  geom_smooth(method="lm",se=F,size=2,aes(col=TreatEnv1))+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  guides(col="none")+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE,size = 8, family = "sans")+
+  geom_text(data=ann_text,mapping=aes(x=0.9,y=0.7,label=label),size = 8, family = "sans")+
+  scale_x_continuous(breaks=seq(0.5,1.5,by=0.5),limits = c(0.48,1.5), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0.6,1.4,by=0.2),limits = c(0.6,1.4), expand = c(0,0))+
+  theme(axis.text = element_text(size = 20,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=df3.2%>%dplyr::group_by(TreatEnv)%>%dplyr::summarise(mean1=mean(PreMeanGRArea,rm.na=T),n=length(PreMeanGRArea));min(N$n);max(N$n)
+```
+        Pre-treatment ratios of surface area growth rate (PreMeanGRArea) and area per biomass (PreMeanAreaBio) correlate under copper and aphid treatments
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanGRArea),]
+df3.2<-df3.2[complete.cases(df3.2$PreMeanAreaBio),]
+
+# statistics
+  # Control treatment
+model<-glmmTMB(data=df3.2[df3.2$TreatEnv=="Control",], PreMeanAreaBio~PreMeanGRArea+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+a<-round(car::Anova(model)[[3]],3)
+  # Copper treatment
+model<-glmmTMB(data=df3.2[df3.2$TreatEnv=="Copper",], PreMeanAreaBio~PreMeanGRArea+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+b<-round(car::Anova(model)[[3]],2)
+  # Aphid treatment
+model<-glmmTMB(data=df3.2[df3.2$TreatEnv=="zAphid",], PreMeanAreaBio~PreMeanGRArea+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+e<-round(car::Anova(model)[[3]],14)
+ann_text<-data.frame(label=paste0("P=",c(a,b,e)),TreatEnv1=c("Control","Copper","Aphid"))
+
+# plot
+pdf(".../FigS2.7c.pdf",height=5,width=20)
+ggplot(df3.2,aes(y=PreMeanAreaBio, x=PreMeanGRArea))+
+  geom_point(col="black",size=2)+
+  facet_grid(~factor(TreatEnv1,levels=c("Control","Copper","Diquat","Salt","Aphid")))+
+  geom_smooth(method="lm",se=F,size=2,aes(col=TreatEnv1))+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  guides(col="none")+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE,size = 8, family = "sans")+
+  geom_text(data=ann_text,mapping=aes(x=0.9,y=1.25,label=label),size = 8, family = "sans")+
+  scale_x_continuous(breaks=seq(0.5,1.5,by=0.5),limits = c(0.48,1.5), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0.6,1.4,by=0.2),limits = c(0.6,1.4), expand = c(0,0))+
+  theme(axis.text = element_text(size = 20,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=df3.2%>%dplyr::group_by(TreatEnv)%>%dplyr::summarise(mean1=mean(PreMeanGRArea,rm.na=T),n=length(PreMeanGRArea));min(N$n);max(N$n)
+```
+
+
+     Does the pre-treatment effect of copper excess on aphid fitness depend on the plant genotype?
+
+       Aphid growth rate pre-treatment ratio (PreMeanGRAphid)
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanGRAphid),]
+
+# statistics
+model<-glmmTMB(data=df3.2, PreMeanGRAphid~Genotype+(1|G9:G10:G11))
+sim<-simulateResiduals(model,n=500, plot=T);testDispersion(sim)
+summary(model)
+car::Anova(model,type=2)
+
+# plot
+round(wilcox.test(df3.2[df3.2$Genotype=="4",]$PreMeanGRAphid,mu=1)$p.value,3)
+round(wilcox.test(df3.2[df3.2$Genotype=="8",]$PreMeanGRAphid,mu=1)$p.value,3)
+round(wilcox.test(df3.2[df3.2$Genotype=="35",]$PreMeanGRAphid,mu=1)$p.value,3)
+round(wilcox.test(df3.2[df3.2$Genotype=="43",]  $PreMeanGRAphid,mu=1)$p.value,3)
+round(wilcox.test(df3.2[df3.2$Genotype=="198",] $PreMeanGRAphid,mu=1)$p.value,3)
+round(wilcox.test(df3.2[df3.2$Genotype=="212",] $PreMeanGRAphid,mu=1)$p.value,3)
+ann_text<-data.frame(label=c("n.s.","0.031","n.s.","n.s.","n.s.","n.s."),Genotype=c("4","8","35","43","198","212"))
+
+df3.4<-(df3.2 %>% dplyr::group_by(TreatEnv1,Genotype) %>% dplyr::summarise(
+  meanPreMeanGRAphid   = mean(PreMeanGRAphid),
+  se = (sd(PreMeanGRAphid)/sqrt(length(PreMeanGRAphid)))))
+
+pdf(".../Fig3b.pdf",height=10,width=6)
+ggplot()+
+  geom_point(data=df3.4,aes(x=Genotype, y=meanPreMeanGRAphid),col="#FFA500", binaxis = "y", stackdir = "center",size=5, position=position_dodge(0.80))+
+  geom_errorbar(data=df3.4,aes(x=Genotype, y=meanPreMeanGRAphid,ymin=meanPreMeanGRAphid-se, ymax=meanPreMeanGRAphid+se),col="#FFA500", 
+                width=0.5, position=position_dodge(0.80),size=0.2)+
+  geom_hline(yintercept=1,linetype="dashed",size=0.2)+
+  geom_text(data=ann_text,mapping=aes(x=Genotype,y=1.5,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0.5,1.75,by=0.25),limits = c(0.5,1.75), expand = c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=df3.2%>%dplyr::group_by(TreatEnv,Genotype)%>%dplyr::summarise(mean1=mean(PreMeanGRAphid,rm.na=T),n=length(PreMeanGRAphid));min(N$n);max(N$n)
+```
+
+      Do the pre-treatment ratios of aphid growth rate correlate to plant fitness and morphology?
+
+        Pre-treatment ratios of surface area growth rate and aphid growth rate correlate
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanGRAphid),]
+df3.2<-df3.2[complete.cases(df3.2$PreMeanGRArea),]
+
+# statistics
+model<-glmmTMB(data=df3.2, PreMeanGRArea~PreMeanGRAphid+(1|Genotype)+(1|G9:G10:G11))
+summary(lm(data=df3.2, PreMeanGRArea~PreMeanGRAphid))
+summary(model)
+car::Anova(model, type="II")
+
+# plot
+pdf(".../Fig3c.pdf",height=5,width=5)
+ggplot(df3.2,aes(PreMeanGRAphid, PreMeanGRArea))+
+  geom_point(col="black",size=3)+
+  geom_smooth(method="lm",se=F,size=1,col="#FFA500")+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE,size = 8, family = "sans")+
+  scale_x_continuous(breaks=seq(0.5,1.8,by=0.25),limits = c(0.5,1.8), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0.4,1.5,by=0.25),limits = c(0.4,1.6), expand = c(0,0))+
+  theme(axis.text = element_text(size = 20,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+```
+        Pre-treatment ratios of frond number growth rate and aphid growth rate correlate
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanGRAphid),]
+df3.2<-df3.2[complete.cases(df3.2$PreMeanAreaFrond),]
+
+# statistics
+model<-glmmTMB(data=df3.2, PreMeanAreaFrond~PreMeanGRAphid+(1|Genotype)+(1|G9:G10:G11))
+model<-glmmTMB(data=df3.2, PreMeanAreaFrond~PreMeanGRAphid+(1|Genotype)+(1|G9:G10:G11),dispformula = ~PreMeanAreaFrond)
+sim<-simulateResiduals(model,n=500, plot=T);testDispersion(sim)
+car::Anova(model)
+summary(model)
+summary(lm(data=df3.2, PreMeanAreaFrond~PreMeanGRAphid))
+
+pdf(".../FigS3.2a.pdf",height=5,width=5)
+ggplot(df3.2,aes(PreMeanGRAphid, PreMeanAreaFrond))+
+  geom_point(col="black",size=3)+
+  geom_smooth(method="lm",se=F,size=1,col="#FFA500")+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE,size = 8, family = "sans")+
+  scale_x_continuous(breaks=seq(0.5,1.8,by=0.25),limits = c(0.5,1.8), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0.6,1.4,by=0.2),limits = c(0.6,1.4), expand = c(0,0))+
+  theme(axis.text = element_text(size = 20,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+```
+        Pre-treatment ratios of biomass per frond and aphid growth rate correlate
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanGRAphid),]
+df3.2<-df3.2[complete.cases(df3.2$PreMeanBioFrond),]
+
+# statistics
+model<-glmmTMB(data=df3.2, PreMeanBioFrond~PreMeanGRAphid+(1|Genotype)+(1|G9:G10:G11))
+sim<-simulateResiduals(model,n=500, plot=T);testDispersion(sim)
+car::Anova(model, type="II")
+summary(model)
+summary(lm(data=df3.2, PreMeanBioFrond~PreMeanGRAphid))
+
+pdf(".../FigS3.2b.pdf",height=10,width=10)
+ggplot(df3.2,aes(PreMeanGRAphid, PreMeanBioFrond))+
+  geom_point(col="black",size=7)+
+  geom_smooth(method="lm",se=F,size=5,col="#FFA500")+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE,size = 8, family = "sans")+
+  scale_x_continuous(breaks=seq(0.5,1.8,by=0.25),limits = c(0.5,1.8), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0.6,1.4,by=0.2),limits = c(0.6,1.4), expand = c(0,0))+
+  theme(axis.text = element_text(size = 20,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+```
+        Pre-treatment ratios of suface area per biomass and aphid growth rate correlate
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanGRAphid),]
+df3.2<-df3.2[complete.cases(df3.2$PreMeanAreaBio),]
+
+# statistics
+model<-glmmTMB(data=df3.2, PreMeanAreaBio~PreMeanGRAphid+(1|Genotype)+(1|G9:G10:G11))
+  # to adjust the model, we simplified it and got similar p-values, so we keep the p-values from the full model
+model<-glmmTMB(data=df3.2, PreMeanAreaBio~PreMeanGRAphid+(1|Genotype),dispformula = ~Genotype)
+sim<-simulateResiduals(model,n=500, plot=T);testDispersion(sim)
+car::Anova(model,type="II")
+summary(model)
+summary(lm(data=df3.2, PreMeanAreaBio~PreMeanGRAphid))
+
+pdf(".../FigS3.2c.pdf",height=10,width=10)
+ggplot(df3.2,aes(PreMeanGRAphid, PreMeanAreaBio))+
+  geom_point(col="black",size=7)+
+  geom_smooth(method="lm",se=F,size=5,col="#FFA500")+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE,size = 8, family = "sans")+
+  scale_x_continuous(breaks=seq(0.5,1.8,by=0.25),limits = c(0.5,1.8), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0.8,1.4,by=0.2),limits = c(0.8,1.4), expand = c(0,0))+
+  theme(axis.text = element_text(size = 20,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+```
+
+
+ 
