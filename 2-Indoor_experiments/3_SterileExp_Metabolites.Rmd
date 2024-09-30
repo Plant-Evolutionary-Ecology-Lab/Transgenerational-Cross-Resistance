@@ -1,0 +1,1254 @@
+---
+title: "Cross Resistance"
+Author: "Alexandra Chávez"
+output: html_notebook
+---
+########################################
+## Clean workspace and upload libraries
+#########################################
+```{r}
+rm(list=ls()) 
+```
+
+#libraries & themes for ggplot and data modification
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(data.table)
+library(psych)
+library(plyr)
+library(ggpubr)
+library(effects)
+library(DHARMa)
+library(glmmTMB)
+library(emmeans)
+library(ggpmisc)
+library(readxl)
+library(multcomp)
+library (ggrepel)
+
+theme_set(theme_classic(base_size = 18))
+set.seed(123) ## set a seed for reproducibility
+```
+
+
+######################################
+##### Upload and organize data #######
+######################################
+```{r}
+df0<- read_excel("./2_SterileExp.xlsx", sheet= "Metabolites",col_names = T, na = "")
+```
+  #Arrange data
+```{r}
+df<-df0
+# organizing levels within variables
+df$Pretreat1<-factor(df$Pretreat, levels=c("Cu-","Cu+"), ordered=TRUE)
+df$TreatEnv1<-factor(df$TreatEnv, levels=c("Control","Copper","Aphid"), ordered=TRUE)
+
+# changing name of level to interpret the model estimates
+df<-df %>%  mutate(TreatEnv = recode(TreatEnv, Aphid=  'zAphid'))
+
+# transforming continuous variables to factors
+df$Genotype<-factor(df$Genotype)
+df$Pretreat<-factor(df$Pretreat)
+df$TreatEnv<-factor(df$TreatEnv)
+df$Replicate<-factor(df$Replicate)
+df$Replicate1<-factor(df$Replicate1)
+df$Rack<-factor(df$Rack)
+df$G9<-factor(df$G9)
+df$G10<-factor(df$G10)
+df$G11<-factor(df$G11)
+df$offsringStart<-factor(df$offsringStart)
+df$Position<-factor(df$Position)
+df$Platte<-factor(df$Platte)
+df$ColumnInPlatte<-factor(df$ColumnInPlatte)
+
+# creating variables for loops
+gen=unique(df$Genotype)
+env=unique(df$TreatEnv)
+met=colnames(df)[17:58]
+
+# calculating plant growth rates
+df$GRArea <-(log(df$AreaEnd)-log(df$AreaInit))/8
+```
+
+
+##############################################################
+###### Effect of the pre-treatment  #########
+##############################################################
+
+       Creating pre-treatment ratio data
+```{r}
+df2<-data.table(df)
+
+for (l in gen){
+for (m in env){
+    a1<-as.numeric(with(df2[Genotype==l&TreatEnv==m&Pretreat=="Cu-",],mean(GRArea,na.rm=T)))
+                        df2[Genotype==l&TreatEnv==m&Pretreat=="Cu+",PreGRArea := GRArea/round(a1,8)]
+  for (n in met){
+        a5<-as.numeric(with(df2[Genotype==l&TreatEnv==m&Pretreat=="Cu-",], mean(get(n),na.rm=T)))
+                            df2[Genotype==l&TreatEnv==m&Pretreat=="Cu+",paste0("Pre",n) := get(n)/round(a5,8)]
+  }}}
+
+## Creating 
+df3<-df2[,-c(15:58,61)]
+df3<-df3[Pretreat=="Cu+",]
+```
+       Summarizing pre-treatment ratio data
+```{r}
+met3<-colnames(df3)[18:59] 
+
+# summarize considering first the genotype
+df3summ<-df3 %>%
+  dplyr::group_by(TreatEnv,Genotype) %>%
+  dplyr::summarise_at(vars(all_of(met3)), mean, na.rm = TRUE)
+# now get the final mean pre-treatment ratios per treatment
+df3summ<-df3summ %>%
+  dplyr::group_by(TreatEnv) %>%
+  dplyr::summarise_at(vars(all_of(met3)), mean, na.rm = TRUE)
+```
+
+
+########################################################
+#### Screening of metabolites through volcano plots ####
+########################################################
+
+```{r}
+dfplot<-df[,c(2:4,6,13:14,17:58)]
+
+## create function to perform mixed-effects model and extract p-values
+modelling <-function(x){
+              data.s <- group.data.long[which(group.data.long$metabolite==x),]
+              data.s <- data.s[complete.cases(data.s$value),]
+              model <- lmer(value ~ Pretreat+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte), data = data.s)
+              aaa <-  car::Anova(model)
+              aaa <- aaa[1,]
+              return(aaa)}
+```
+
+
+      Does copper excess pre-treatment affect the concentration of metabolites under specific oxidative stress inducers?
+    
+       Screening in control treatment
+```{r}
+## take p-values from model in a loop
+data.long <- rbind(dfplot[dfplot$TreatEnv=="Control",]) %>% gather(metabolite, value, 7:48)
+group.data.long  <- group_by(data.long , metabolite)
+list.mol <-unique(c(as.character(data.long$metabolite)))
+
+## aplied function to each element in the list
+data.stats <- sapply(list.mol, modelling, simplify = FALSE,USE.NAMES = TRUE)
+
+## transform from list to data frame
+res <- do.call(rbind, data.stats)
+res <- setDT(res, keep.rownames = TRUE)[]
+
+## merge p-values data wth the pre-treatment ratio data
+table.pretreat <- (df3summ[df3summ$TreatEnv=="Control",]) %>% gather(pretreat, Ratio, 2:43)
+table.pretreat$rn<-sub("^Pre", "", table.pretreat$pretreat)
+de<-merge(res,table.pretreat,by="rn")
+names(de)[names(de) == 'Pr(>Chisq)'] <- 'pvalue'
+
+## add labels for the significance and effect of the pre-treatment
+de$diffexpressed <- "no changes"
+de$diffexpressed[de$Ratio >= 1 & de$pvalue < 0.05] <- "Enhanced"
+de$diffexpressed[de$Ratio < 1 & de$pvalue < 0.05] <- "Supressed"
+
+# plot
+pdf(".../Fig4a1.pdf",height=6,width=10)
+ggplot(data=de) +
+  geom_point(aes(x = Ratio, y = -log10(pvalue), colour = diffexpressed),size=3) +
+  geom_text_repel(aes(x = Ratio, y = -log10(pvalue), label = ifelse(rn %in% c("JA", "JAIle","OPDA"),rn,
+                                                                    ifelse(de$diffexpressed != "no changes", rn, ""))),
+                  max.overlaps = 20,family = "sans",size=8) +
+  geom_vline(xintercept=1, col="black", linetype = "longdash") +
+  geom_hline(yintercept=-log10(0.05), col="black", linetype = "longdash") +
+  ylab(expression(paste(-Log[10], " P"))) +
+  scale_color_manual(name = "Pre-\ntreatment:", values=c("dodgerblue4", "#CC0000", "#000000"), 
+                     labels = c("Supressed", "Enhanced", "No changes"), breaks = c("Supressed", "Enhanced", "no changes"))+
+  labs(x="Pre-treatment ratio",title="Control Environment")+
+  scale_x_continuous(breaks=seq(0.6 ,2,by=0.35),limits = c(0.58,2))+
+  scale_y_continuous(breaks=seq(0 ,4,by=1),limits = c(0,4))+
+  guides(color="none")+
+  theme(axis.text = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))   
+dev.off()
+```
+       Screening in copper treatment
+```{r}
+## take p-values from model in a loop
+data.long <- rbind(dfplot[dfplot$TreatEnv=="Copper",]) %>% gather(metabolite, value, 7:48)
+group.data.long  <- group_by(data.long , metabolite)
+list.mol <-unique(c(as.character(data.long$metabolite)))
+
+## aplied function to each element in the list
+data.stats <- sapply(list.mol, modelling, simplify = FALSE,USE.NAMES = TRUE)
+
+## transform from list to data frame
+res <- do.call(rbind, data.stats)
+res <- setDT(res, keep.rownames = TRUE)[]
+
+## merge p-values data wth the pre-treatment ratio data
+table.pretreat <- (df3summ[df3summ$TreatEnv=="Copper",]) %>% gather(pretreat, Ratio, 2:43)
+table.pretreat$rn<-sub("^Pre", "", table.pretreat$pretreat)
+de<-merge(res,table.pretreat,by="rn")
+names(de)[names(de) == 'Pr(>Chisq)'] <- 'pvalue'
+
+## add labels for the significance and effect of the pre-treatment
+de$diffexpressed <- "no changes"
+de$diffexpressed[de$Ratio >= 1 & de$pvalue < 0.05] <- "Enhanced"
+de$diffexpressed[de$Ratio < 1 & de$pvalue < 0.05] <- "Supressed"
+
+# plot
+pdf(".../Fig4a2.pdf",height=6,width=10)
+ggplot(data=de) +
+  geom_point(aes(x = Ratio, y = -log10(pvalue), colour = diffexpressed),size=3) +
+  geom_text_repel(aes(x = Ratio, y = -log10(pvalue), label = ifelse(rn %in% c("JA", "JAIle","OPDA"),rn,
+                                                                    ifelse(de$diffexpressed != "no changes", rn, ""))),
+                  max.overlaps = 20,family = "sans",size=8) +
+  geom_vline(xintercept=1, col="black", linetype = "longdash") +
+  geom_hline(yintercept=-log10(0.05), col="black", linetype = "longdash") +
+  ylab(expression(paste(-Log[10], " P"))) +
+  scale_color_manual(name = "Pre-\ntreatment:", values=c("dodgerblue4", "#CC0000", "#000000"), 
+                     labels = c("Supressed", "Enhanced", "No changes"), breaks = c("Supressed", "Enhanced", "no changes"))+
+  labs(x="Pre-treatment ratio",title="Copper Environment")+
+  scale_x_continuous(breaks=seq(0.6 ,2,by=0.35),limits = c(0.58,2))+
+  scale_y_continuous(breaks=seq(0 ,4,by=1),limits = c(0,4))+
+  guides(color="none")+
+  theme(axis.text = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))   
+dev.off()
+```
+       Screening in Aphid treatment
+```{r}
+## take p-values from model in a loop
+data.long <- rbind(dfplot[dfplot$TreatEnv=="zAphid",]) %>% gather(metabolite, value, 7:48)
+group.data.long  <- group_by(data.long , metabolite)
+list.mol <-unique(c(as.character(data.long$metabolite)))
+
+## aplied function to each element in the list
+data.stats <- sapply(list.mol, modelling, simplify = FALSE,USE.NAMES = TRUE)
+
+## transform from list to data frame
+res <- do.call(rbind, data.stats)
+res <- setDT(res, keep.rownames = TRUE)[]
+
+## merge p-values data wth the pre-treatment ratio data
+table.pretreat <- (df3summ[df3summ$TreatEnv=="zAphid",]) %>% gather(pretreat, Ratio, 2:43)
+table.pretreat$rn<-sub("^Pre", "", table.pretreat$pretreat)
+de<-merge(res,table.pretreat,by="rn")
+names(de)[names(de) == 'Pr(>Chisq)'] <- 'pvalue'
+
+## add labels for the significance and effect of the pre-treatment
+de$diffexpressed <- "no changes"
+de$diffexpressed[de$Ratio >= 1 & de$pvalue < 0.05] <- "Enhanced"
+de$diffexpressed[de$Ratio < 1 & de$pvalue < 0.05] <- "Supressed"
+
+# plot
+pdf(".../Fig4b3.pdf",height=6,width=10)
+ggplot(data=de) +
+  geom_point(aes(x = Ratio, y = -log10(pvalue), colour = diffexpressed),size=3) +
+  geom_text_repel(aes(x = Ratio, y = -log10(pvalue), label = ifelse(rn %in% c("JA", "JAIle","OPDA"),rn,
+                                                                    ifelse(de$diffexpressed != "no changes", rn, ""))),
+                  max.overlaps = 20,family = "sans",size=8) +
+  geom_vline(xintercept=1, col="black", linetype = "longdash") +
+  geom_hline(yintercept=-log10(0.05), col="black", linetype = "longdash") +
+  ylab(expression(paste(-Log[10], " P"))) +
+  scale_color_manual(name = "Pre-\ntreatment:", values=c("dodgerblue4", "#CC0000", "#000000"), 
+                     labels = c("Supressed", "Enhanced", "No changes"), breaks = c("Supressed", "Enhanced", "no changes"))+
+  labs(x="Pre-treatment ratio",title="Aphid Environment")+
+  scale_x_continuous(breaks=seq(0.6 ,2,by=0.35),limits = c(0.58,2))+
+  scale_y_continuous(breaks=seq(0 ,4,by=1),limits = c(0,4))+
+  guides(color="none")+
+  theme(axis.text = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))   
+dev.off()
+```
+
+
+###############################################################
+##### Analysis of transgenerationally plastic metabolites #####
+###############################################################
+
+      Does copper excess pre-treatment transgeneraionally retains or primes the plastic metabolites?
+          
+          Cyanidin-malonyl-glucose
+```{r}
+dflm<-df[complete.cases(df$CyanidinMalGlcHPLC),]
+dflm<-rbind(dflm[dflm$TreatEnv=="Control",],dflm[dflm$TreatEnv=="Copper",])
+
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, CyanidinMalGlcHPLC~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte))
+model<-glmmTMB(data=dflm, CyanidinMalGlcHPLC~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+modelp<-glmmTMB(data=dflm, CyanidinMalGlcHPLC~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log),
+contrasts=list(Pretreat="contr.sum",TreatEnv="contr.sum"))
+summary(model)
+car::Anova(modelp,type="III")
+
+pdf(".../Fig4.1a.pdf",height=6,width=6)
+ggplot(dflm,aes(Pretreat, CyanidinMalGlcHPLC))+
+  geom_violin( alpha=0.5,aes(col=Pretreat1, fill=Pretreat1))+
+  geom_boxplot(width=0.2,aes(fill=Pretreat1),size=0.2)+
+  guides(color="none",fill="none")+
+  facet_grid(~TreatEnv1)+
+  scale_color_manual(values = c("Cu-"="dodgerblue4", "Cu+"="#CC0000"))+
+  scale_fill_manual(values = c("Cu-"="dodgerblue4", "Cu+"="#CC0000"))+
+  scale_y_continuous(breaks=seq(0,1.5,by=0.5),limits = c(0,1.5), expand = c(0,0))+
+  labs(x="Treatment environment",y="Cyanidin Mal Gl (µmol/g FW)")+
+  theme(axis.text = element_text(vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=(dflm %>% dplyr::group_by(TreatEnv1,Pretreat1) %>% dplyr::summarise(CyanidinMalGlcMean = mean(CyanidinMalGlcHPLC, na.rm = TRUE), 
+                                                                      n=length(CyanidinMalGlcHPLC)));min(N$n);max(N$n)
+((0.2254622-0.1993450)/0.1993450)*100
+((0.7069707-0.6079205)/0.6079205)*100
+```
+          Cyanidin-3-glucose
+```{r}
+dflm<-df[complete.cases(df$Cyanidin3GlcHPLC),]
+dflm<-rbind(dflm[dflm$TreatEnv=="Control",],dflm[dflm$TreatEnv=="Copper",])
+
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, Cyanidin3GlcHPLC~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte))
+model<-glmmTMB(data=dflm, Cyanidin3GlcHPLC~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+modelp<-glmmTMB(data=dflm, Cyanidin3GlcHPLC~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log),
+contrasts=list(Pretreat="contr.sum",TreatEnv="contr.sum"))
+summary(model)
+car::Anova(modelp,type="III")
+
+pdf(".../FigS4.1b.pdf",height=6,width=6)
+ggplot(dflm,aes(Pretreat, Cyanidin3GlcHPLC))+
+  geom_violin( alpha=0.5,aes(col=Pretreat1, fill=Pretreat1))+
+  geom_boxplot(width=0.2,aes(fill=Pretreat1),size=0.2)+
+  guides(color="none",fill="none")+
+  facet_grid(~TreatEnv1)+
+  scale_color_manual(values = c("Cu-"="dodgerblue4", "Cu+"="#CC0000"))+
+  scale_fill_manual(values = c("Cu-"="dodgerblue4", "Cu+"="#CC0000"))+
+  scale_y_continuous(breaks=seq(0,0.30,by=0.1),limits = c(0,0.30), expand = c(0,0))+
+  labs(x="Treatment environment",y="Cyanidin 3 Gl (µmol/g FW)")+
+  theme(axis.text = element_text(vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=(dflm %>% dplyr::group_by(TreatEnv1,Pretreat1) %>% dplyr::summarise(Cyanidin3GlcHPLC = mean(Cyanidin3GlcHPLC, na.rm = TRUE), 
+                                                                      n=length(CyanidinMalGlcHPLC)));min(N$n);max(N$n)
+((0.07417895-0.07098340)/0.07098340)*100
+((0.16301264-0.14433704)/0.14433704)*100
+```
+          12-oxo-phytodienoic acid
+```{r}
+dflm<-df[complete.cases(df$OPDA),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+
+#control and copper treatments
+dflm1<-rbind(dflm[dflm$TreatEnv=="Control",],dflm[dflm$TreatEnv=="Copper",])
+
+model<-glmmTMB(data=dflm1, log(OPDA)~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte))
+model<-glmmTMB(data=dflm1, OPDA~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+summary(model)
+modelp<-glmmTMB(data=dflm1, OPDA~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log),
+contrasts=list(Pretreat="contr.sum",TreatEnv="contr.sum"))
+car::Anova(modelp,type="III")
+
+#control and aphid
+dflm3<-rbind(dflm[dflm$TreatEnv=="Control",],dflm[dflm$TreatEnv=="zAphid",])
+
+model<-glmmTMB(data=dflm3, OPDA~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte))
+model<-glmmTMB(data=dflm3, OPDA~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+summary(model)
+modelp<-glmmTMB(data=dflm3, OPDA~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log),
+contrasts=list(Pretreat="contr.sum",TreatEnv="contr.sum"))
+car::Anova(modelp,type="III")
+
+
+pdf(".../FigS4.1c.pdf",height=10,width=6)
+ggplot(dflm,aes(Pretreat, OPDA))+
+  geom_violin( alpha=0.5,aes(col=Pretreat1, fill=Pretreat1))+
+  geom_boxplot(width=0.2,aes(fill=Pretreat1),size=0.2)+
+  guides(color="none",fill="none")+
+  facet_grid(~TreatEnv1)+
+  scale_color_manual(values = c("Cu-"="dodgerblue4", "Cu+"="#CC0000"))+
+  scale_fill_manual(values = c("Cu-"="dodgerblue4", "Cu+"="#CC0000"))+
+  labs(x="Treatment environment",y="OPDA (µmol/g FW)")+
+  theme(axis.text = element_text(vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=(dflm %>% dplyr::group_by(TreatEnv1,Pretreat1) %>% dplyr::summarise(OPDA = mean(OPDA, na.rm = TRUE), n=length(CyanidinMalGlcHPLC)));min(N$n);max(N$n)
+((25848.09-19919.48)/19919.48)*100
+((62628.94-29671.19)/29671.19)*100
+((49125.29-25864.82)/25864.82)*100
+```
+          Tryptamine
+```{r}
+dflm<-df[complete.cases(df$Tryptamine),]
+dflm<-rbind(dflm[dflm$TreatEnv=="Control",],dflm[dflm$TreatEnv=="zAphid",])
+options(contrasts = c("contr.treatment", "contr.poly"))
+
+model<-glmmTMB(data=dflm, Tryptamine~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte))
+model<-glmmTMB(data=dflm, Tryptamine~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family = Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+summary(model)
+modelp<-glmmTMB(data=dflm, Tryptamine~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family = Gamma(log),
+contrasts=list(Pretreat="contr.sum",TreatEnv="contr.sum"))
+car::Anova(modelp,type="III")
+
+pdf(".../FigS4.1d.pdf",height=6,width=6)
+ggplot(dflm,aes(Pretreat, Tryptamine))+
+  geom_violin( alpha=0.5,aes(col=Pretreat1, fill=Pretreat1))+
+  geom_boxplot(width=0.2,aes(fill=Pretreat1),size=0.2)+
+  guides(color="none",fill="none")+
+  facet_grid(~TreatEnv1)+
+  scale_color_manual(values = c("Cu-"="dodgerblue4", "Cu+"="#CC0000"))+
+  scale_fill_manual(values = c("Cu-"="dodgerblue4", "Cu+"="#CC0000"))+
+  scale_y_continuous(breaks=seq(0,0.001,by=0.00025),limits = c(0,0.0011), expand = c(0,0))+
+  labs(x="Treatment environment",y="Tryptamine (µmol/g FW)")+
+  theme(axis.text = element_text(vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+N=(dflm %>% dplyr::group_by(TreatEnv1,Pretreat1) %>% dplyr::summarise(Tryptamine = mean(Tryptamine, na.rm = TRUE), n=length(CyanidinMalGlcHPLC)));min(N$n);max(N$n)
+((0.0003005433-0.0002557767)/0.0002557767)*100
+((0.0003468868-0.0002270410)/0.0002270410)*100
+```
+
+
+###############################################################
+### Analysis per metabolite for the hierarchical clustering ###
+###############################################################
+
+      Does copper excess pre-treatment affect the concentration of metabolites under different oxidative stress inducers?
+
+        Modelling per metabolite
+```{r}
+### Amino acids
+  # clean data set
+dflm<-df[complete.cases(df$LAlanine),]
+  # set constrast in all the environment and adjust the model
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LAlanine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+  # assess the residual to get a fit model
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+  # set the environment to get p-values from an ANOVA with interaction
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LAlanine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+  # collect results of the adjusted models in a list
+model.list<-list(LAlanine=model)
+
+dflm<-df[complete.cases(df$LValine),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LValine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LValine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+model.list<-c(model.list,list(LValine=model))
+
+dflm<-df[complete.cases(df$LMethionine),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LMethionine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LMethionine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+model.list<-c(model.list,list(LMethionine=model))
+
+dflm<-df[complete.cases(df$LLeucine2),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LLeucine2~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LLeucine2~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+model.list<-c(model.list,list(LLeucine=model))
+
+dflm<-df[complete.cases(df$LIsoleucine1),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LIsoleucine1~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LIsoleucine1~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+model.list<-c(model.list,list(LIsoleucine=model))
+
+dflm<-df[complete.cases(df$LProline),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LProline~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LProline~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+model.list<-c(model.list,list(LProline=model))
+
+dflm<-df[complete.cases(df$LThreonine),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LThreonine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LThreonine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte))
+model.list<-c(model.list,list(LThreonine=model))
+
+dflm<-df[complete.cases(df$LGlutamine),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LGlutamine~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model,dflm$TreatEnv,main=NULL);plotResiduals(model,dflm$Pretreat,main=NULL);plotResiduals(model,dflm$Replicate,main=NULL);plotResiduals(model,dflm$Genotype,main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LGlutamine~Pretreat*TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+model.list<-c(model.list,list(LGlutamine=model))
+
+dflm<-df[complete.cases(df$Glycine),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, Glycine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, Glycine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+model.list<-c(model.list,list(Glycine=model))
+
+dflm<-df[complete.cases(df$LSerine),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LSerine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LSerine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte))
+model.list<-c(model.list,list(LSerine=model))
+
+dflm<-df[complete.cases(df$LAsparagine),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LAsparagine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula = ~TreatEnv)
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LAsparagine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula = ~TreatEnv)
+model.list<-c(model.list,list(LAsparagine=model))
+car::Anova(model)
+
+dflm<-df[complete.cases(df$LHistidine),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LHistidine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LHistidine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+model.list<-c(model.list,list(LHistidine=model))
+
+dflm<-df[complete.cases(df$LArginine),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LArginine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula=~TreatEnv,family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LArginine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula=~TreatEnv,family=Gamma(log))
+model.list<-c(model.list,list(LArginine=model))
+
+dflm<-df[complete.cases(df$LAsparticAcid),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LAsparticAcid~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LAsparticAcid~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte))
+model.list<-c(model.list,list(LAsparticAcid=model))
+
+dflm<-df[complete.cases(df$LGlutamicAcid),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LGlutamicAcid~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LGlutamicAcid~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte))
+model.list<-c(model.list,list(LGlutamicAcid=model))
+
+## shikamate pathway
+dflm<-df[complete.cases(df$ShikimicAcid),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, ShikimicAcid~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula=~TreatEnv,family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, ShikimicAcid~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula=~TreatEnv,family=Gamma(log))
+model.list<-c(model.list,list(ShikimicAcid=model))
+
+dflm<-df[complete.cases(df$LTyrosine),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LTyrosine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LTyrosine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+model.list<-c(model.list,list(LTyrosine=model))
+
+dflm<-df[complete.cases(df$Tyramine),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, Tyramine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, Tyramine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+model.list<-c(model.list,list(Tyramine=model))
+
+## amines
+dflm<-df[complete.cases(df$LTryptophane),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LTryptophane~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LTryptophane~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+model.list<-c(model.list,list(LTryptophane=model))
+
+dflm<-df[complete.cases(df$Tryptamine),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, Tryptamine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, Tryptamine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+model.list<-c(model.list,list(Tryptamine=model))
+
+## derivates
+dflm<-df[complete.cases(df$IAA130),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, IAA130~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log),dispformula = ~TreatEnv)
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, IAA130~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log),dispformula = ~TreatEnv)
+model.list<-c(model.list,list(Auxin=model))
+
+## phenylpropanoids
+dflm<-df[complete.cases(df$LPhenylalanine),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, LPhenylalanine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, LPhenylalanine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+model.list<-c(model.list,list(LPhenylalanine=model))
+
+dflm<-df[complete.cases(df$CoumaricAcidP),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, CoumaricAcidP~Pretreat*TreatEnv*Genotype+(1|Replicate),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, CoumaricAcidP~Pretreat*TreatEnv*Genotype+(1|Replicate),family=Gamma(log))
+model.list<-c(model.list,list(CoumaricAcidP=model))
+
+dflm<-df[complete.cases(df$CaffeicAcid),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, CaffeicAcid~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, CaffeicAcid~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+model.list<-c(model.list,list(CaffeicAcid=model))
+
+dflm<-df[complete.cases(df$SinapicAcid),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-lmer(data=dflm, SinapicAcid~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-lmer(data=dflm, SinapicAcid~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte))
+model.list<-c(model.list,list(SinapicAcid=model))
+
+dflm<-df[complete.cases(df$PutChlorogenicAcidIsomer),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, PutChlorogenicAcidIsomer~Pretreat*TreatEnv*Genotype+(1|Replicate),dispformula = ~TreatEnv)
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, PutChlorogenicAcidIsomer~Pretreat*TreatEnv*Genotype+(1|Replicate),dispformula = ~TreatEnv)
+model.list<-c(model.list,list(PutChlorogenicAcidIsomer=model))
+
+dflm<-df[complete.cases(df$ChlorogenicAcidHPLC),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, ChlorogenicAcidHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log),dispformula = ~TreatEnv, control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, ChlorogenicAcidHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log),dispformula = ~TreatEnv, control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+model.list<-c(model.list,list(ChlorogenicAcid=model))
+
+## flavonoids
+dflm<-df[complete.cases(df$Luteolin7OGlcHPLC),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, Luteolin7OGlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula = ~TreatEnv, control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, Luteolin7OGlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula = ~TreatEnv, control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+model.list<-c(model.list,list(Luteolin7OGlc=model))
+
+dflm<-df[complete.cases(df$Luteolin8CGlcHPLC),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, Luteolin8CGlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula=~TreatEnv)
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, Luteolin8CGlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula=~TreatEnv)
+model.list<-c(model.list,list(Luteolin8CGlc=model))
+
+dflm<-df[complete.cases(df$Apigenin7OGlcHPLC),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, Apigenin7OGlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula = ~TreatEnv, control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, Apigenin7OGlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula = ~TreatEnv, control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+model.list<-c(model.list,list(Apigenin7OGlc=model))
+
+dflm<-df[complete.cases(df$Apigenin8CGlcHPLC),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, Apigenin8CGlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte),dispformula=~TreatEnv,control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, Apigenin8CGlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte),dispformula=~TreatEnv,control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+model.list<-c(model.list,list(Apigenin8CGlc=model))
+
+dflm<-df[complete.cases(df$Cyanidin3GlcHPLC),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, Cyanidin3GlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|ColumnInPlatte),dispformula=~TreatEnv,family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, Cyanidin3GlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|ColumnInPlatte),dispformula=~TreatEnv,family=Gamma(log),control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+model.list<-c(model.list,list(Cyanidin3Glc=model))
+
+dflm<-df[complete.cases(df$CyanidinMalGlcHPLC),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, CyanidinMalGlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula=~TreatEnv,family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, CyanidinMalGlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula=~TreatEnv,family=Gamma(log),control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+model.list<-c(model.list,list(CyanidinMalGlc=model))
+
+## others
+dflm<-df[complete.cases(df$SA),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, SA~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, SA~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+model.list<-c(model.list,list(SA=model))
+
+## jasmonate pathway
+dflm<-df[complete.cases(df$OPDA),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, OPDA~Pretreat*TreatEnv*Genotype+(1|Replicate),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, OPDA~Pretreat*TreatEnv*Genotype+(1|Replicate),family=Gamma(log))
+model.list<-c(model.list,list(OPDA=model))
+
+dflm<-df[complete.cases(df$JA),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, JA~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, JA~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+model.list<-c(model.list,list(JA=model))
+
+dflm<-df[complete.cases(df$JAIle),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, JAIle~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, JAIle~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+model.list<-c(model.list,list(JAIle=model))
+
+## citokinines
+dflm<-df[complete.cases(df$IPR),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, IPR~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, IPR~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+model.list<-c(model.list,list(IPR=model))
+
+dflm<-df[complete.cases(df$tZ),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, tZ~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, tZ~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+model.list<-c(model.list,list(tZ=model))
+
+dflm<-df[complete.cases(df$tZR),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, tZR~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula=~TreatEnv*Genotype,family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, tZR~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula=~TreatEnv*Genotype,family=Gamma(log),control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+model.list<-c(model.list,list(tZR=model))
+
+dflm<-df[complete.cases(df$cZR),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, cZR~Pretreat*TreatEnv*Genotype+(1|Replicate),dispformula = ~TreatEnv*Genotype)
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model, dflm$TreatEnv,  main=NULL);plotResiduals(model, dflm$Genotype,  main=NULL);plotResiduals(model, dflm$Pretreat,  main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, cZR~Pretreat*TreatEnv*Genotype+(1|Replicate),dispformula = ~TreatEnv*Genotype)
+model.list<-c(model.list,list(cZR=model))
+
+## others
+dflm<-df[complete.cases(df$ABA),]
+options(contrasts = c("contr.treatment", "contr.poly"))
+model<-glmmTMB(data=dflm, ABA~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log),
+               control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+sim1<-simulateResiduals(model,n=500, plot=T);plotResiduals(model,dflm$TreatEnv,main=NULL);plotResiduals(model,dflm$Genotype,main=NULL);plotResiduals(model,dflm$Pretreat,main=NULL)
+options(contrasts = c("contr.sum", "contr.poly"))
+model<-glmmTMB(data=dflm, ABA~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=gaussian(log),
+                control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+model.list<-c(model.list,list(ABA=model))
+
+model.list2<-model.list
+```
+        Extracting Chi2 and p-values per metabolite
+```{r}
+# Function to extract relevant information from each Anova result
+anova_info <- function(model, name) {
+  # Perform Anova on the model
+  anova_result <- car::Anova(model, type = "III")
+  # Extract Chi-squared values and p-values
+  chi2_p_values <- data.frame(
+    Metabolite = name,
+    Variable = rownames(anova_result),
+    Chi2 = anova_result$`Chisq`,
+    p_value = anova_result$`Pr(>Chisq)`,
+    Significance = cut(anova_result$`Pr(>Chisq)`, 
+                   breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf), 
+                   labels = c("***", "**", "*", ".", ""))
+  )
+  return(chi2_p_values)}
+
+# Apply the function to each model in the list and include the metabolite name
+data.stats<-mapply(anova_info, model.list2, names(model.list2), SIMPLIFY = FALSE)
+
+# Organize  and clean the data
+ris <- do.call(rbind, data.stats)
+ris <- setDT(ris, keep.rownames = TRUE)[]
+ris <- ris[,-1]
+ris <- ris[ris$Variable!="(Intercept)",]
+```
+        Creating the heatmap
+```{r}
+# Organize the variables for the plot
+ris$Metabolite <- factor(ris$Metabolite, ordered = T, levels = rev(unique(ris$Metabolite)))
+ris$Variable <- factor(ris$Variable, ordered = T, levels = (unique(ris$Variable)))
+ris$logChi2<-log(ris$Chi2)
+
+# Identify the color limits for the plot
+min(ris$logChi2)
+max(ris$logChi2)
+
+#plot
+pdf("N:/Publications & Source Data/2023_CrossResistance/Figures/RFigures/FigS4.2.pdf",height=18,width=16)
+ggplot(ris, aes(Variable, Metabolite)) + 
+  geom_tile(aes(fill = logChi2))+
+  labs(x="Variable combination",y="Metabolite",fill="Ln(Chi2/DF)")+
+  geom_text(aes(label = Significance), color = "black", size = 15)+
+  scale_fill_gradient2(midpoint = 0,low = "#0056B3",mid="white", high = "#CC0000",breaks = c(-5,-2.5,0,4.5, 9),limits=c(-5.1, 9))+
+  theme(axis.text.x = element_text(size=25,angle = 10, vjust = 1, hjust=0.8,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+dev.off()
+```
+        Obtaining the modelled percentage of increase
+```{r}
+options(contrasts = c("contr.treatment", "contr.poly"))
+
+dflm<-df[complete.cases(df$Tryptamine),]
+model<-glmmTMB(data=dflm, Tryptamine~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+effect("Pretreat",model)
+((0.0007241369-0.0005812769)/0.0005812769)*100
+
+dflm<-df[complete.cases(df$Luteolin7OGlcHPLC),]
+model<-glmmTMB(data=dflm, Luteolin7OGlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula = ~TreatEnv, control=glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+effect("Pretreat",model)
+((1.0401115-0.9961728)/0.9961728)*100
+
+dflm<-df[complete.cases(df$Cyanidin3GlcHPLC),]
+model<-glmmTMB(data=dflm, Cyanidin3GlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|ColumnInPlatte),dispformula=~TreatEnv,family=Gamma(log))
+effect("Pretreat",model)
+((0.09398443-0.08858010)/0.08858010)*100
+
+dflm<-df[complete.cases(df$CyanidinMalGlcHPLC),]
+model<-glmmTMB(data=dflm, CyanidinMalGlcHPLC~Pretreat*TreatEnv*Genotype+(1|Replicate)+(1|Platte:ColumnInPlatte),dispformula=~TreatEnv,family=Gamma(log))
+effect("Pretreat",model)
+((0.2959972-0.2650576)/0.2650576)*100
+
+dflm<-df[complete.cases(df$OPDA),]
+model<-glmmTMB(data=dflm, OPDA~Pretreat*TreatEnv*Genotype+(1|Replicate),family=Gamma(log))
+effect("Pretreat",model)
+((22590.88-15520.22)/15520.22)*100
+```
+
+
+###############################################################
+### Correlation of jasmonates ###
+###############################################################
+
+```{r}
+df1lm<-df3[complete.cases(df3$PreOPDA),]
+df1lm<-df1lm[complete.cases(df1lm$PreJA),]
+
+model<-glmmTMB(data=df1lm[df1lm$TreatEnv1=="Aphid",],PreJA~PreOPDA+(1|Genotype))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+car::Anova(model)
+
+pdf(".../FigS4.3a.pdf",height=5,width=5)
+ggplot(df1lm[df1lm$TreatEnv1=="Aphid",],aes(y=PreJA, x=(PreOPDA)))+
+  geom_point(size=5)+
+  geom_smooth(method=lm,se=F,color="#FFA500")+
+  labs(y="Pre-treatment ratio of JA",x="Pre-treatment ratio of OPDA")+
+  scale_x_continuous(breaks=seq(0,6,by=2),limits = c(0,6.5), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0,2.8,by=0.4),limits = c(0,2.8), expand = c(0,0))+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE)+#col=TreatEnv1, fill=TreatEnv1,
+  theme(axis.text = element_text(vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+model<-glmmTMB(data=df1lm[df1lm$TreatEnv1=="Aphid",],PreJAIle~PreOPDA+(1|Genotype))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+car::Anova(model)
+
+pdf(".../FigS4.3b.pdf",height=5,width=5)
+ggplot(df1lm[df1lm$TreatEnv1=="Aphid",],aes(y=PreJAIle, x=(PreOPDA)))+
+  geom_point(size=5)+
+  geom_smooth(method=lm,se=F,color="#FFA500")+
+  labs(y="Pre-treatment ratio of JAIle",x="Pre-treatment ratio of OPDA")+
+  scale_x_continuous(breaks=seq(0,6,by=2),limits = c(0,6.5), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0,2.5,by=0.5),limits = c(0,2.5), expand = c(0,0))+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE)+#col=TreatEnv1, fill=TreatEnv1,
+  theme(axis.text = element_text(vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+```
+
+####################################
+### Analysis of stress induction ###
+####################################
+
+      Do stress induce changes in the concentration of metabolites?
+
+          Cyanidin-malonyl-glucose
+```{r}
+dflm<-df[complete.cases(df$CyanidinMalGlcHPLC),]
+dflm<-dflm[dflm$Pretreat=="Cu-",]
+
+model<-glmmTMB(data=dflm, CyanidinMalGlcHPLC~TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte))
+model<-glmmTMB(data=dflm, CyanidinMalGlcHPLC~TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+summary(model)
+car::Anova(model,type="II")
+
+model<-glmmTMB(data=dflm, CyanidinMalGlcHPLC~TreatEnv1+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=gaussian(log))
+text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+dflm1<-(dflm %>% dplyr::group_by(TreatEnv1) %>%dplyr::summarise(meanCyanidinMalGlcHPLC=mean(CyanidinMalGlcHPLC),se=(sd(CyanidinMalGlcHPLC)/sqrt(length(CyanidinMalGlcHPLC)))))
+
+pdf(".../Fig4c.pdf",height=10,width=6)
+ggplot(dflm1,aes(TreatEnv1, meanCyanidinMalGlcHPLC))+
+  geom_col(data=dflm1,aes(x=TreatEnv1, y=meanCyanidinMalGlcHPLC,fill=TreatEnv1,col="black"),width=0.2,size=0.2)+
+  geom_errorbar(data=dflm1,aes(x=TreatEnv1, y=meanCyanidinMalGlcHPLC,ymin=meanCyanidinMalGlcHPLC-se, ymax=meanCyanidinMalGlcHPLC+se), width=0.2, position=position_dodge(0.80),size=0.2)+
+  guides(color="none",fill="none")+
+  scale_color_manual(values = c("Control"="dodgerblue4", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual(values = c("Control"="dodgerblue4", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_y_continuous(breaks=seq(0,0.6,by=0.3),limits = c(0,1.2), expand = c(0,0))+
+  geom_text(data=text,aes(x = TreatEnv1, y = 1,label=label),size = 8, family = "sans")+
+  theme(axis.text = element_text(vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+
+(dflm %>% dplyr::group_by(TreatEnv1) %>% dplyr::summarise(meanCyanidinMalGlcHPLC=mean(CyanidinMalGlcHPLC),se=(sd(CyanidinMalGlcHPLC)/sqrt(length(CyanidinMalGlcHPLC))),N=length(CyanidinMalGlcHPLC)))
+((0.6079205-0.1993450)/0.1993450)*100
+((0.1907447-0.1993450)/0.1993450)*100
+```
+          Cyanidin-3-glucose
+```{r}
+dflm<-df[complete.cases(df$Cyanidin3GlcHPLC),]
+dflm<-dflm[dflm$Pretreat=="Cu-",]
+
+model<-glmmTMB(data=dflm, Cyanidin3GlcHPLC~TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte))
+model<-glmmTMB(data=dflm, Cyanidin3GlcHPLC~TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family = gaussian(inverse))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+summary(model)
+car::Anova(model,type="II")
+
+model<-glmmTMB(data=dflm, Cyanidin3GlcHPLC~TreatEnv1+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte))
+text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+dflm1<-(dflm %>% dplyr::group_by(TreatEnv1) %>% dplyr::summarise(meanCyanidin3GlcHPLC=mean(Cyanidin3GlcHPLC),se=(sd(Cyanidin3GlcHPLC)/sqrt(length(Cyanidin3GlcHPLC))),N=length(Cyanidin3GlcHPLC)))
+
+pdf(".../Fig4d.pdf",height=10,width=10)
+ggplot(dflm1,aes(TreatEnv1, meanCyanidin3GlcHPLC))+
+  geom_col(data=dflm1,aes(x=TreatEnv1, y=meanCyanidin3GlcHPLC,fill=TreatEnv1,col="black"),width=0.2,size=0.2)+
+  geom_errorbar(data=dflm1,aes(x=TreatEnv1, y=meanCyanidin3GlcHPLC,ymin=meanCyanidin3GlcHPLC-se, ymax=meanCyanidin3GlcHPLC+se), width=0.2, position=position_dodge(0.80),size=0.2)+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_y_continuous(breaks=seq(0,0.2,by=0.05),limits = c(0,0.2), expand = c(0,0))+
+  labs(x="Treatment",y="Cyanidin3GlcHPLC (µmol/g FW)")+
+  geom_text(data=text,aes(x =TreatEnv1, y = 0.15,label=label),size = 8, family = "sans")+
+  theme(axis.text = element_text(vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+(dflm %>% dplyr::group_by(TreatEnv1) %>% dplyr::summarise(meanCyanidin3GlcHPLC=mean(Cyanidin3GlcHPLC),n=length(Cyanidin3GlcHPLC)))
+((0.14433704-0.07098340)/0.07098340)*100
+((0.07253738-0.07098340)/0.07098340)*100
+```
+          12-oxo-phytodienoic acid
+```{r}
+dflm<-df[complete.cases(df$OPDA),]
+dflm<-dflm[dflm$Pretreat=="Cu-",]
+
+model<-glmmTMB(data=dflm, OPDA~TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte))
+model<-glmmTMB(data=dflm, OPDA~TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+summary(model)
+car::Anova(model,type="II")
+plot(allEffects(model))
+
+model<-glmmTMB(data=dflm, OPDA~TreatEnv1+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log))
+ann_text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+dflm1<-(dflm %>% dplyr::group_by(TreatEnv1) %>%dplyr::summarise(meanOPDA=mean(OPDA),se=(sd(OPDA)/sqrt(length(OPDA)))))
+pdf(".../Fig4e.pdf",height=6,width=6)
+ggplot(dflm1,aes(TreatEnv1, meanOPDA))+
+  geom_col(data=dflm1,aes(x=TreatEnv1, y=meanOPDA,fill=TreatEnv1,col="black"),width=0.2,size=0.2)+
+  geom_errorbar(data=dflm1,aes(x=TreatEnv1, y=meanOPDA,ymin=meanOPDA-se, ymax=meanOPDA+se), width=0.2, position=position_dodge(0.80),size=0.2)+
+  guides(color="none",fill="none")+
+  scale_color_manual(values = c("Control"="dodgerblue4", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual(values = c("Control"="dodgerblue4", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  geom_text(data=ann_text,mapping=aes(x=TreatEnv1,y=35000,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,40000,by=10000),limits = c(0,40000), expand = c(0,0))+
+  labs(x="Treatment",y="OPDA (µmol/g FW)")+
+  theme(axis.text = element_text(vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+(dflm %>% dplyr::group_by(TreatEnv1) %>% dplyr::summarise(meanOPDA=mean(OPDA)))
+((29671.19-19919.48)/19919.48)*100
+((25864.82-19919.48)/19919.48)*100
+```
+          Tryptamine
+```{r}
+dflm<-df[complete.cases(df$Tryptamine),]
+dflm<-dflm[dflm$Pretreat=="Cu-",]
+
+model<-glmmTMB(data=dflm, Tryptamine~TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte))
+model<-glmmTMB(data=dflm, Tryptamine~TreatEnv+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log),dispformula = ~TreatEnv)
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+summary(model)
+car::Anova(model,type="II")
+
+model<-glmmTMB(data=dflm, Tryptamine~TreatEnv1+(1|Genotype)+(1|Replicate)+(1|Platte)+(1|Platte:ColumnInPlatte),family=Gamma(log),dispformula = ~TreatEnv)
+text<-data.frame(label=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$.group,TreatEnv1=cld(emmeans(model,pairwise~TreatEnv1), Letters = letters)$TreatEnv1)
+
+pdf(".../Fig4f.pdf",height=6,width=6)
+dflm2<-(dflm %>% dplyr::group_by(TreatEnv1) %>% dplyr::summarise(meanTryptamine=mean(Tryptamine),se=(sd(Tryptamine)/sqrt(length(Tryptamine)))))
+ggplot()+
+  geom_col(data=dflm2,aes(x=TreatEnv1, y=meanTryptamine,fill=TreatEnv1,col="black"),width=0.2,size=0.2)+
+  geom_errorbar(data=dflm2,aes(x=TreatEnv1, y=meanTryptamine,ymin=meanTryptamine-se, ymax=meanTryptamine+se), width=0.2, position=position_dodge(0.80),size=0.2)+
+  guides(color="none",fill="none")+
+  scale_color_manual(values = c("Control"="dodgerblue4", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual(values = c("Control"="dodgerblue4", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  geom_text(data=ann_text,mapping=aes(x=TreatEnv1,y=0.0085,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,0.009,by=0.003),limits = c(0,0.009), expand = c(0,0))+
+  labs(x="Treatment",y="Tryptamine (µmol/g FW)")+
+  theme(axis.text = element_text(vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+
+(dflm %>% dplyr::group_by(TreatEnv1) %>% dplyr::summarise(meanTryptamine=mean(Tryptamine),se=(sd(Tryptamine)/sqrt(length(Tryptamine)))))
+((0.0073260367-0.0002557767)/0.0002557767)*100
+((0.0002270410-0.0002557767)/0.0002557767)*100
+```
+
+      Do plastic metabolites correlate to plant fitness?
+
+          Cyanidin-malonyl-glucose
+```{r}
+dflm<-df[complete.cases(df$CyanidinMalGlcHPLC),]
+dflm<-dflm[complete.cases(dflm$GRArea),]
+dflm<-dflm[dflm$Pretreat=="Cu-",]
+dflm<-rbind(dflm[dflm$TreatEnv=="Control",],dflm[dflm$TreatEnv=="Copper",])
+
+model<-glmmTMB(data=dflm, GRArea~CyanidinMalGlcHPLC*TreatEnv+(1|Genotype)+(1|Replicate))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+summary(model)
+modelp<-glmmTMB(data=dflm, GRArea~CyanidinMalGlcHPLC*TreatEnv+(1|Genotype)+(1|Replicate),
+contrasts=list(TreatEnv="contr.sum"))
+car::Anova(modelp,type="III")
+
+model<-glmmTMB(data=dflm[dflm$TreatEnv=="Control",], GRArea~CyanidinMalGlcHPLC+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+summary(model)
+car::Anova(model)
+
+model<-glmmTMB(data=dflm[dflm$TreatEnv=="Copper",], GRArea~CyanidinMalGlcHPLC+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+summary(model)
+car::Anova(model)
+
+pdf(".../Fig5a.pdf",height=8,width=6)
+ggplot(data=dflm,aes(y=GRArea, x=CyanidinMalGlcHPLC,col=TreatEnv1, fill=TreatEnv1))+
+  geom_point(size=8,alpha=0.5)+
+  geom_smooth(method=lm,se=F)+
+  guides(color="none",fill="none")+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000","Aphid"="#FFA500"))+
+  labs(y="GRArea",x="CyanidinMalGlcHPLC (µmol/g FW)")+
+  scale_x_continuous(breaks=seq(0,1.2,by=0.4),limits = c(0,1.2), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0.2,0.5,by=0.1),limits = c(0.2,0.5), expand = c(0,0))+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE)+#col=TreatEnv1, fill=TreatEnv1,
+  theme(axis.text = element_text(vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+```
+          Cyanidin-3-glucose
+```{r}
+dflm<-df[complete.cases(df$Cyanidin3GlcHPLC),]
+dflm<-dflm[complete.cases(dflm$GRArea),]
+dflm<-dflm[dflm$Pretreat=="Cu-",]
+dflm<-rbind(dflm[dflm$TreatEnv=="Control",],dflm[dflm$TreatEnv=="Copper",])
+
+model<-glmmTMB(data=dflm, GRArea~Cyanidin3GlcHPLC*TreatEnv+(1|Genotype)+(1|Replicate),family=Gamma(inverse),dispformula = ~TreatEnv)
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+summary(model)
+modelp<-glmmTMB(data=dflm, GRArea~Cyanidin3GlcHPLC*TreatEnv+(1|Genotype)+(1|Replicate),family=Gamma(inverse),dispformula = ~TreatEnv,
+contrasts=list(TreatEnv="contr.sum"))
+car::Anova(modelp,type="III")
+
+model<-glmmTMB(data=dflm[dflm$TreatEnv=="Control",], GRArea~Cyanidin3GlcHPLC+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+summary(model)
+car::Anova(model)
+
+model<-glmmTMB(data=dflm[dflm$TreatEnv=="Copper",], GRArea~Cyanidin3GlcHPLC+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+summary(model)
+car::Anova(model)
+
+pdf(".../FigS5.1a.pdf",height=8,width=8)
+ggplot(rbind(dflm[dflm$TreatEnv=="Control",],dflm[dflm$TreatEnv=="Copper",]),aes(y=GRArea, x=Cyanidin3GlcHPLC,col=TreatEnv1, fill=TreatEnv1))+
+  geom_point(size=8,alpha=0.5)+
+  geom_smooth(method=lm,se=F,size=2)+
+  guides(color="none",fill="none")+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000"))+
+  labs(y="GRArea",x="Cyanidin3GlcHPLC (µmol/g FW)")+
+  scale_x_continuous(breaks=seq(0.05,0.25,by=0.1),limits = c(0.05,0.25), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0.2,0.5,by=0.1),limits = c(0.2,0.5), expand = c(0,0))+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE)+#col=TreatEnv1, fill=TreatEnv1,
+  theme(axis.text = element_text(vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+```
+          Tryptamine
+```{r}
+dflm<-df[complete.cases(df$Tryptamine),]
+dflm<-dflm[complete.cases(dflm$GRArea),]
+dflm<-dflm[dflm$Pretreat=="Cu-",]
+dflm<-rbind(dflm[dflm$TreatEnv=="Control",],dflm[dflm$TreatEnv=="zAphid",])
+
+model<-glmmTMB(data=dflm, GRArea~log(Tryptamine)*TreatEnv+(1|Genotype)+(1|Replicate),dispformula = ~Genotype)
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+summary(model)
+options(contrasts = c("contr.sum", "contr.poly"))
+modelp<-glmmTMB(data=dflm, GRArea~log(Tryptamine)*TreatEnv+(1|Genotype)+(1|Replicate),dispformula = ~Genotype)
+car::Anova(modelp,type="III")
+options(contrasts = c("contr.treatment", "contr.poly"))
+
+summary(lm(data=dflm[dflm$TreatEnv=="Control",], GRArea~log(Tryptamine)))
+
+model<-glmmTMB(data=dflm[dflm$TreatEnv=="Control",], GRArea~log(Tryptamine)+(1|Genotype))
+model<-glmmTMB(data=dflm[dflm$TreatEnv=="Copper",], GRArea~log(Tryptamine)+(1|Genotype))
+model<-glmmTMB(data=dflm[dflm$TreatEnv=="zAphid",], GRArea~log(Tryptamine)+(1|Genotype))
+sim<-simulateResiduals(model,n=500, plot=T)
+summary(model)
+car::Anova(model)
+
+pdf(".../FigS5.1b.pdf",height=8,width=8)
+ggplot(dflm,aes(y=GRArea, x=Tryptamine,col=TreatEnv1, fill=TreatEnv1))+
+  geom_point(size=8,alpha=0.5)+
+  geom_smooth(method=lm,se=F,size=2)+
+  guides(color="none",fill="none")+
+  scale_colour_manual(values = c("Control"="#0056B3","Aphid"="#FFA500"))+
+  scale_fill_manual  (values = c("Control"="#0056B3","Aphid"="#FFA500"))+
+  labs(y="GRArea",x="Tryptamine (µmol/g FW)")+
+  scale_x_continuous(breaks=seq(0,0.0008,by=0.0002),limits = c(0,0.0008), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0.1,0.5,by=0.1),limits = c(0.1,0.5), expand = c(0,0))+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE)+#col=TreatEnv1, fill=TreatEnv1,
+  theme(axis.text = element_text(vjust = 0.5, hjust=1,size = 18,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+```
+
