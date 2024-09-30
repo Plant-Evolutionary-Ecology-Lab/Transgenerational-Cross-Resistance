@@ -1,0 +1,387 @@
+---
+title: "Transgenerational plasticity in plant defence - Outdoor experiments"
+author: "Alexandra Chávez"
+output: html_notebook
+---
+Cleaning environment and setting working folder
+```{r}
+rm(list=ls()) 
+
+## Uploading packages
+library(readxl)
+library(dplyr) 
+library(ggplot2) 
+library(data.table) 
+library(plyr) 
+library(lme4)
+library(effects)
+library(DHARMa)
+library(glmmTMB)
+library(emmeans)
+library(ggpmisc)
+
+# theme for ggplots
+theme_set(theme_classic(base_size = 18))
+```
+
+##############################################################
+###### Upload data, set and create variables #########
+##############################################################
+
+```{r}
+df1<-read_excel("./1_OutdoorExp.xlsx", sheet="Outdoor")
+```
+
+```{r}
+#convert to factors
+df1$Pretreat1<-factor(df1$Pretreat, ordered = T, levels = c("Ctr","Cu"))
+df1$TreatEnv1<-factor(df1$TreatEnv, ordered = T, levels = c("Control","Copper"))
+df1$Date<-factor(df1$Date)
+
+## create fitness variables
+  #Growth rates
+df1$GRArea <-round(((log(df1$EndArea)-log(df1$InitArea))/8),8)
+df1$GRFrond<-round(((log(df1$EndFrond)-log(df1$InitFrond))/8),8)
+
+## create phenotype data
+df1$AreaFrond<-((df1$EndArea)/(df1$EndFrond))
+```
+
+
+##############################################################
+###### Full factorial analysis of fitness and phenotype ######
+##############################################################
+
+      Does copper excess pre-treatment affect fitness under different oxidative stress inducers?
+    
+       Growth rate of surface area (GRArea)
+```{r}
+dfArea<-df1[complete.cases(df1$GRArea),]
+
+## Statistics 
+options(contrasts = c("contr.treatment", "contr.poly"))
+
+model<- glmmTMB(data=dfArea,GRArea~Pretreat*TreatEnv+(1|pair))
+model<- glmmTMB(data=dfArea,GRArea~Pretreat*TreatEnv+(1|pair),dispformula = ~TreatEnv) ## selected model
+options(contrasts = c("contr.sum", "contr.poly"))
+modelp<- glmmTMB(data=dfArea,GRArea~Pretreat*TreatEnv+(1|pair),dispformula = ~TreatEnv)#or: #,contrasts=list(Pretreat="contr.sum",TreatEnv="contr.sum"))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1);plotResiduals(model,df1$TreatEnv);plotResiduals(model,df1$Pretreat)
+summary(model)
+car::Anova(modelp,type="III")
+
+a<-round(car::Anova(glmmTMB(data=dfArea[dfArea$TreatEnv=="Control",],GRArea~Pretreat+(1|pair)))$`Pr(>Chisq)`,2)
+b<-round(car::Anova(glmmTMB(data=dfArea[dfArea$TreatEnv=="Copper",],GRArea~Pretreat+(1|pair)))$`Pr(>Chisq)`,2)
+ann_text<-data.frame(label=paste0(c(a,b)),TreatEnv1=c("Control","Copper"))
+
+## Plot
+pdf(".../Fig1b.pdf",height=6,width=10)
+ggplot(dfArea,aes(x=TreatEnv1, y=GRArea))+
+  geom_boxplot(aes(fill=Pretreat1))+
+  geom_point(aes(fill=Pretreat1), shape=21,size=5, position=position_dodge(1))+
+  scale_color_manual(values = c("Ctr"="#0056B3", "Cu"="#CC0000"))+
+  scale_fill_manual(values = c("Ctr"="#0056B3", "Cu"="#CC0000"))+
+  labs(y="Surface area growth rate per day",x="Treatment environment",color="Pre-\ntreatment",fill="Pre-\ntreatment")+
+  geom_text(data=ann_text,aes(x = TreatEnv1, y = 0.12,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,0.3,by=0.05),limits = c(0,0.3))+#,expand=c(0,0)
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+dev.off()
+
+## Plot within copper environment 
+pdf(".../Fig1bb.pdf",height=6,width=10)
+ggplot(dfArea[dfArea$TreatEnv=="Copper",],aes(x=TreatEnv1, y=GRArea))+
+  geom_boxplot(aes(fill=Pretreat1))+
+  geom_point(aes(fill=Pretreat1), shape=21,size=5, position=position_dodge(1))+
+  scale_color_manual(values = c("Ctr"="#0056B3", "Cu"="#CC0000"))+
+  scale_fill_manual(values = c("Ctr"="#0056B3", "Cu"="#CC0000"))+
+  labs(y="Surface area growth rate per day",x="Treatment environment",color="Pre-\ntreatment",fill="Pre-\ntreatment")+
+  scale_y_continuous(breaks=seq(0,0.015,by=0.005),limits = c(0,0.015))+#,expand=c(0,0)
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+dev.off()
+
+copper<-dfArea[dfArea$TreatEnv=="Copper",]
+copper%>%dplyr::group_by(Pretreat)%>%dplyr::summarise(meanGRArea=mean(GRArea))
+((0.004851117	-0.000905600)/0.000905600)*100
+```
+       Growth rate of frond number (GRFrond)
+```{r}
+dfFrond<-df1[complete.cases(df1$GRFrond),]
+
+## statistics
+model<- glmmTMB(data=dfFrond,GRFrond~Pretreat*TreatEnv+(1|pair))
+modelp<- glmmTMB(data=dfFrond,GRFrond~Pretreat*TreatEnv+(1|pair),contrasts=list(Pretreat="contr.sum",TreatEnv="contr.sum"))
+sim1<-simulateResiduals(model,n=500, plot=T);testDispersion(sim1)
+summary(model)
+anova(model)
+car::Anova(modelp,type="III")
+plot(allEffects(model1))
+
+a<-round(car::Anova(glmmTMB(data=dfFrond[dfFrond$TreatEnv=="Control",],GRFrond~Pretreat+(1|pair)))$`Pr(>Chisq)`,2)
+b<-round(car::Anova(glmmTMB(data=dfFrond[dfFrond$TreatEnv=="Copper",],GRFrond~Pretreat+(1|pair)))$`Pr(>Chisq)`,2)
+ann_text<-data.frame(label=paste0("P=",c(a,b)),TreatEnv1=c("Control","Copper"))
+
+##  Plot
+pdf(".../FigS1a.pdf",height=6,width=10)
+ggplot(dfFrond,aes(x=TreatEnv1, y=GRFrond))+
+  geom_boxplot(aes(fill=Pretreat1))+
+  geom_point(aes(fill=Pretreat1), shape=21,size=5, position=position_dodge(1))+
+  scale_color_manual(values = c("Ctr"="#0056B3", "Cu"="#CC0000"))+
+  scale_fill_manual(values = c("Ctr"="#0056B3", "Cu"="#CC0000"))+
+  labs(y="Growth rate of frond number per day",x="Treatment environment",color="Pre-\ntreatment",fill="Pre-\ntreatment")+
+  geom_text(data=ann_text,aes(x = TreatEnv1, y = 0.12,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,0.3,by=0.1),limits = c(0,0.32))+#,expand=c(0,0)
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+  dev.off()
+```
+       SUrface area per frond (AreaFrond)
+```{r}
+dfAreaFrond<-df1[complete.cases(df1$AreaFrond),]
+
+## Statistics
+model<- glmmTMB(data=dfAreaFrond,AreaFrond~Pretreat*TreatEnv+(1|pair))
+modelp<- glmmTMB(data=dfAreaFrond,AreaFrond~Pretreat*TreatEnv+(1|pair),contrasts=list(Pretreat="contr.sum",TreatEnv="contr.sum"))
+sim1<-simulateResiduals(model1,n=500, plot=T);testDispersion(sim1)
+summary(model)
+car::Anova(modelp,type="III")
+
+a<-round(car::Anova(glmmTMB(data=dfAreaFrond[dfAreaFrond$TreatEnv=="Control",],AreaFrond~Pretreat+(1|pair)))$`Pr(>Chisq)`,2)
+b<-round(car::Anova(glmmTMB(data=dfAreaFrond[dfAreaFrond$TreatEnv=="Copper",],AreaFrond~Pretreat+(1|pair)))$`Pr(>Chisq)`,2)
+ann_text<-data.frame(label=paste0("P=",c(a,b)),TreatEnv1=c("Control","Copper"))
+
+## Plots 
+pdf(".../FigS1.2a.pdf",height=6,width=10)
+ggplot(dfAreaFrond,aes(x=TreatEnv1, y=AreaFrond))+
+  geom_boxplot(aes(fill=Pretreat1))+
+  geom_point(aes(fill=Pretreat1), shape=21,size=5, position=position_dodge(1))+
+  scale_color_manual(values = c("Ctr"="#0056B3", "Cu"="#CC0000"))+
+  scale_fill_manual(values = c("Ctr"="#0056B3", "Cu"="#CC0000"))+
+  labs(y="Surface area per frond",x="Treatment environment",color="Pre-\ntreatment",fill="Pre-\ntreatment")+
+  geom_text(data=ann_text,aes(x = TreatEnv1, y = 12,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,30,by=10),limits = c(0,35),expand=c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+dev.off()
+
+dfAreaFrond%>%dplyr::group_by(TreatEnv,Pretreat)%>%dplyr::summarise(meanAreaFrond=mean(AreaFrond))
+((14.85671-15.73269)/15.73269)*100
+((15.38037-14.78919)/14.78919)*100
+```
+
+      Correlation between GRArea and GRFrond
+```{r}
+df1.2<-df1[complete.cases(df1$GRArea),]
+df1.2<-df1.2[complete.cases(df1$GRFrond),]
+
+model<-lmer(data=df1.2, GRArea~GRFrond+(1|Pretreat)+(1|TreatEnv)+(1|pair))
+simulateResiduals(model,n=500, plot=T)
+summary(lm(data=df1.2, GRArea~GRFrond))
+car::Anova(model)
+
+df1.3<-(df1.2 %>% dplyr::group_by(TreatEnv1,TreatEnv,Pretreat) %>% dplyr::summarise(
+  MeanGRArea  = mean(GRArea, na.rm = TRUE),
+  MeanGRFrond   = mean(GRFrond, na.rm = TRUE)))
+
+model<-lmer(data=df1.3, MeanGRArea~MeanGRFrond+(1|Pretreat)+(1|TreatEnv))
+simulateResiduals(model,n=500, plot=T)
+car::Anova(model)
+
+pdf(".../FigS1.1c.pdf",height=6,width=6)
+ggplot(df1.2,aes(GRArea, GRFrond))+
+  geom_point(aes(col=TreatEnv1),size=3)+
+  geom_smooth(method="lm",se=F,size=1,col="black",formula = y~x)+
+  stat_poly_eq(formula = x~y, aes(label = paste(after_stat(rr.label))), parse = TRUE,size = 8, family = "sans")+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000"))+
+  geom_text(aes(x=0.2, y=0.1), label = "Treatment\n=1e-12",size = 8, family = "sans")+
+  scale_x_continuous(breaks=seq(0,0.3,by=0.1),limits = c(0,0.3), expand = c(0,0))+
+  scale_y_continuous(breaks=seq(0,0.3,by=0.1),limits = c(0,0.35), expand = c(0,0))+
+  theme(axis.text = element_text(size = 20,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+```
+
+
+##############################################################################
+###### Analysis of the pre-treatment ratio of fitness and phenotype  #########
+##############################################################################
+
+      Do the pre-treatment effects of copper excess vary depending on the recurrent stress?
+
+       Pre-treatmet ratios of fitness and phenotype
+```{r}
+df2<-data.table(df1)
+dim(df2)
+TreatEnv<-unique(df2$TreatEnv)
+
+## Resistance based on growth rate values
+for (m in TreatEnv){
+    a2<-as.numeric(with(df2[TreatEnv==m&Pretreat=="Ctr",], mean(GRFrond)))
+                        df2[TreatEnv==m&Pretreat=="Cu",paste('PreMeanGRFrond')  :=GRFrond/round(a2,8)]
+    a3<-as.numeric(with(df2[TreatEnv==m&Pretreat=="Ctr",], mean(GRArea)))
+                        df2[TreatEnv==m&Pretreat=="Cu",paste('PreMeanGRArea')   :=GRArea/round(a3,8)]
+    a4<-as.numeric(with(df2[TreatEnv==m&Pretreat=="Ctr",], mean(AreaFrond)))
+                        df2[TreatEnv==m&Pretreat=="Cu",paste('PreMeanAreaFrond'):=AreaFrond/round(a4,8)]
+}
+
+## Final resistance Data set
+df3<-df2[Pretreat=="Cu",]
+```
+
+
+        Growth rate of surface area pre-treatment ratio (PreMeanGRArea)
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanGRArea),]
+
+## statistics
+model<-glmmTMB(data=df3.2,PreMeanGRArea~TreatEnv)
+sim<-simulateResiduals(model,n=500, plot=T);testDispersion(sim); plotResiduals(model, df3.2$TreatEnv,  main=NULL)
+summary(model)
+car::Anova(model,type="II")
+
+a<-round(wilcox.test(df3.2[df3.2$TreatEnv1=="Control",]$PreMeanGRArea,mu=1)$p.value,2)
+b<-round(wilcox.test(df3.2[df3.2$TreatEnv1=="Copper",]$PreMeanGRArea,mu=1)$p.value,2)
+ann_text<-data.frame(label=c(a,b),TreatEnv1=c("Control","Copper"))
+
+df3.3<-(df3.2 %>% dplyr::group_by(TreatEnv1) %>% dplyr::summarise(
+  meanPreMeanGRArea   = mean(PreMeanGRArea),#  n= n(),
+  se = (sd(PreMeanGRArea)/sqrt(length(PreMeanGRArea)))))
+
+## plot
+pdf(".../Fig1c.pdf",height=6,width=10)
+ggplot(df3.3)+
+  geom_point(data=df3.3,aes(x=TreatEnv1, y=meanPreMeanGRArea,col=TreatEnv1), binaxis = "y", stackdir = "center",size=8, position=position_dodge(0.80))+
+  geom_errorbar(data=df3.3,aes(x=TreatEnv1, y=meanPreMeanGRArea,col=TreatEnv1,ymin=meanPreMeanGRArea-se, ymax=meanPreMeanGRArea+se), 
+                width=0.5, position=position_dodge(0.80),size=0.2)+
+  geom_jitter(data=df3.2,aes(TreatEnv1, PreMeanGRArea,col=TreatEnv1),alpha=0.2, width=0.3,size=5)+
+  geom_hline(yintercept=1,linetype="dashed",size=2)+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000"))+
+  labs(y="Surface area growth rate per day of\ncopper/control pre-treated plants",x="Treatment environment")+
+  geom_text(data=ann_text,mapping=aes(x=TreatEnv1,y=2,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,12,by=4),limits = c(0,13), expand = c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+```
+        Growth rate of frond number pre-treatment ratio (PreMeanGRFrond)
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanGRFrond),]
+
+## statistics
+model<-glmmTMB(data=df3.2,PreMeanGRFrond~TreatEnv)
+sim<-simulateResiduals(model,n=500, plot=T);testDispersion(sim)
+summary(model)
+car::Anova(model,type="II")
+
+a<-round(wilcox.test(df3.2[df3.2$TreatEnv1=="Control",]$PreMeanGRFrond,mu=1)$p.value,2)
+b<-round(wilcox.test(df3.2[df3.2$TreatEnv1=="Copper",]$PreMeanGRFrond,mu=1)$p.value,2)
+ann_text<-data.frame(label=c(a,b),TreatEnv1=c("Control","Copper"))
+
+## plots
+df3.3<-(df3.2 %>% dplyr::group_by(TreatEnv1) %>% dplyr::summarise(
+  meanPreMeanGRFrond   = mean(PreMeanGRFrond),
+  se = (sd(PreMeanGRFrond)/sqrt(length(PreMeanGRFrond)))))
+
+pdf(".../FigS1.1b.pdf",height=6,width=6)
+ggplot()+
+  geom_point(data=df3.3,aes(x=TreatEnv1, y=meanPreMeanGRFrond,col=TreatEnv1), binaxis = "y", stackdir = "center",size=8, position=position_dodge(0.80))+
+  geom_errorbar(data=df3.3,aes(x=TreatEnv1, y=meanPreMeanGRFrond,col=TreatEnv1,ymin=meanPreMeanGRFrond-se, ymax=meanPreMeanGRFrond+se), 
+                width=0.5, position=position_dodge(0.80),size=0.2)+
+  geom_jitter(data=df3.2,aes(TreatEnv1, PreMeanGRFrond,col=TreatEnv1),alpha=0.2, width=0.3,size=5)+
+  geom_hline(yintercept=1,linetype="dashed",size=2)+
+  guides(color="none",fill="none")+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000"))+
+  labs(y="Surface Frond growth rate per day of\ncopper/control pre-treated plants",x="Treatment environment")+
+  geom_text(data=ann_text,mapping=aes(x=TreatEnv1,y=2,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0,6,by=2),limits = c(0,6), expand = c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+```
+        Surface area per frond pre-treatment ratio (PreMeanAreaFrond)
+```{r}
+df3.2<-df3[complete.cases(df3$PreMeanAreaFrond),]
+
+## statistics
+model<-glmmTMB(data=df3.2,PreMeanAreaFrond~TreatEnv)
+sim<-simulateResiduals(model,n=500, plot=T)
+plotResiduals(model, df3.2$TreatEnv,  main=NULL)
+summary(model)
+car::Anova(model,type="II")
+
+a<-round(wilcox.test(df3.2[df3.2$TreatEnv1=="Control",]$PreMeanAreaFrond,mu=1)$p.value,2)
+b<-round(wilcox.test(df3.2[df3.2$TreatEnv1=="Copper",]$PreMeanAreaFrond,mu=1)$p.value,2)
+ann_text<-data.frame(label=c(a,b),TreatEnv1=c("Control","Copper"))
+
+## plots
+df3.3<-(df3.2 %>% dplyr::group_by(TreatEnv1) %>% dplyr::summarise(
+  meanPreMeanAreaFrond   = mean(PreMeanAreaFrond),
+  se = (sd(PreMeanAreaFrond)/sqrt(length(PreMeanAreaFrond)))))
+
+pdf(".../Fig1.2b.pdf",height=6,width=10)
+ggplot()+
+  geom_point(data=df3.3,aes(x=TreatEnv1, y=meanPreMeanAreaFrond,col=TreatEnv1), binaxis = "y", stackdir = "center",size=8, position=position_dodge(0.80))+
+  geom_errorbar(data=df3.3,aes(x=TreatEnv1, y=meanPreMeanAreaFrond,col=TreatEnv1,ymin=meanPreMeanAreaFrond-se, ymax=meanPreMeanAreaFrond+se), 
+                width=0.5, position=position_dodge(0.80),size=0.2)+
+  geom_jitter(data=df3.2,aes(TreatEnv1, PreMeanAreaFrond,col=TreatEnv1),alpha=0.2, width=0.3,size=5)+
+  geom_hline(yintercept=1,linetype="dashed",size=2)+
+  scale_colour_manual(values = c("Control"="#0056B3", "Copper"="#CC0000"))+
+  scale_fill_manual  (values = c("Control"="#0056B3", "Copper"="#CC0000"))+
+  labs(y="Surface AreaFrond growth rate per day of\ncopper/control pre-treated plants",x="Treatment environment")+
+  geom_text(data=ann_text,mapping=aes(x=TreatEnv1,y=1.2,label=label),size = 8, family = "sans")+
+  scale_y_continuous(breaks=seq(0.8,1.7,by=0.2),limits = c(0.8,1.7), expand = c(0,0))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black"))
+dev.off()
+```
+
+
