@@ -1,0 +1,125 @@
+---
+title: "Induction analysis"
+author: "Alexandra Chávez"
+output: html_notebook
+---
+
+########################################
+## Clean workspace and upload libraries
+#########################################
+
+```{r}
+rm(list=ls())
+```
+
+#libraries & themes for ggplot and data modification
+```{r}
+library(ggplot2) 
+library(DHARMa)
+library(glmmTMB)
+library(emmeans)
+library(multcomp)
+library(dplyr)
+
+theme_set(theme_classic(base_size = 18))
+set.seed(123) ## set a seed for reproducibility
+```
+
+
+######################################
+##### Upload and organize data #######
+######################################
+
+```{r}
+library(readxl)
+df<-read_excel("./4_InductionExp.xlsx", sheet="Induction")
+df2<-read_excel("./4_InductionExp.xlsx", sheet="Repetition")
+```
+
+#convert to factors
+```{r}
+df$DateStart<-factor(df$DateStart)
+df$Replicate<-factor(df$Replicate)
+df$TreatEnv<-factor(df$TreatEnv)
+df$Pretreat<-factor(df$Pretreat)
+df$Pretreat1<-factor(df$Pretreat, levels=c("Control","JA"))
+df$TreatEnv1<-factor(df$TreatEnv, levels=c("Control","Aphid"))
+
+df2$Replicate<-factor(df2$Replicate)
+df2$Plate<-factor(df2$Plate)
+df2$Pretreat<- factor(df2$Pretreat)
+df2$Pretreat1<-factor(df2$Pretreat, levels=c("Control","JA"))
+```
+
+#fitness and phenotype variables
+```{r}
+df$GRAphid<-(log(df$AphidEnd)-log(df$AphidStart))/2
+
+df2$GRAphid<-(log(df2$Aphids)-log(df2[df2$Days==0,]$Aphids))/df2$Days
+```
+
+
+###############################
+#### Effects of jasmonates ####
+###############################
+
+      Does aplication of methyl jasmonate affect fitness of the aphid herbivore?
+
+```{r}
+df1<-df[complete.cases(df$GRAphid),]
+
+model<-glmmTMB(data=df1,GRAphid~Pretreat+(1|Replicate)+(1|DateStart))
+sim<-simulateResiduals(model,n=500, plot=T);testDispersion(sim)
+summary(model)
+car::Anova(model)
+
+df1 %>% dplyr::group_by(Pretreat) %>% dplyr::summarise(MeanGRAphid = mean(GRAphid), n = length(GRAphid))
+(0.5010036-0.3612127)/0.3612127
+
+pdf("./Fig5c.pdf",height=6,width=4)
+ggplot(df1,aes(x=Pretreat1,y=GRAphid))+
+  geom_boxplot(width=0.5,aes(fill=Pretreat1),size=0.2)+
+  geom_jitter(size=5,width=0.2,shape=21,aes(fill=Pretreat1))+
+  guides(fill="none",color="none")+
+  scale_fill_manual(values = c("Control"="#0056B3", "JA"="#D55E00"))+
+  scale_y_continuous(breaks=seq(0 ,8,by=2),limits = c(0 ,8))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+  dev.off()
+```
+
+      Are jasmonate effects in aphid herbivore reproducible?
+
+```{r}
+df1<-df2[complete.cases(df2$GRAphid),]
+
+model<-glmmTMB(data=df1,GRAphid~Pretreat+(1|Plate))
+sim<-simulateResiduals(model,n=500, plot=T);testDispersion(sim)
+summary(model)
+car::Anova(model)
+
+df1 %>% dplyr::group_by(Pretreat) %>% dplyr::summarise(MeanGRAphid = mean(GRAphid), n = length(GRAphid))
+
+pdf("./FigS5.3.pdf",height=6,width=6)
+ggplot(df1,aes(x=Pretreat1,y=GRAphid))+
+  geom_boxplot(width=0.5,aes(fill=Pretreat1),size=0.2)+
+  geom_jitter(size=5,width=0.2,shape=21,aes(fill=Pretreat1))+
+  guides(fill="none",color="none")+
+  scale_fill_manual(values = c("Control"="#0056B3", "JA"="#D55E00"))+
+  theme(axis.text.x = element_text(size = 20,color="black", family = "sans"),
+        axis.text.y = element_text(size = 25,color="black", family = "sans"),
+        axis.title =element_text(size = 30,color="black",face = "bold", family = "sans"),
+        legend.text = element_text(size = 20,color="black", family = "sans"),
+        legend.background = element_rect(fill = F),
+        legend.key = element_rect(fill = F),
+        legend.title = element_text(size = 30,color="black", family = "sans"),
+        axis.ticks = element_line(color="black")) 
+  dev.off()
+```
+
